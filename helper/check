@@ -1,0 +1,75 @@
+#!/usr/bin/python3
+"""Privileged update check.
+
+Runs as root (via pkexec / the systemd timer):
+
+1. refresh zypper repositories,
+2. compute a dry-run distribution upgrade,
+3. note whether snapshot support is present,
+4. write the result to the status file the GUI watches.
+
+It never installs anything.
+"""
+
+from __future__ import annotations
+
+import datetime
+import os
+import subprocess
+import sys
+
+# Allow running straight from a source checkout (helper/ next to the package).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tumbleweed_updater import sources, statusfile  # noqa: E402
+from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
+
+
+def _snapshots_ok() -> bool:
+    try:
+        rpm = subprocess.run(
+            ["rpm", "-q", "snapper-zypp-plugin"], capture_output=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return rpm.returncode == 0
+
+
+def _refresh() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["zypper", "--non-interactive", "refresh"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except FileNotFoundError:
+        return "zypper is not installed"
+    except subprocess.TimeoutExpired:
+        return "repository refresh timed out"
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout).strip().splitlines()
+        return tail[-1] if tail else f"zypper refresh exited {proc.returncode}"
+    return None
+
+
+def main() -> int:
+    refresh_error = _refresh()
+
+    zypper = sources.check_zypper()
+    if zypper.error is None and refresh_error and not zypper.packages:
+        zypper.error = f"repository refresh failed: {refresh_error}"
+
+    status = UpdateStatus(
+        zypper=zypper,
+        snapshots_ok=_snapshots_ok(),
+        generated=datetime.datetime.now(datetime.timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+    )
+    statusfile.write(status)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

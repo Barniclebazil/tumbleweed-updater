@@ -1,0 +1,15 @@
+[Unit]
+Description=Check for openSUSE Tumbleweed updates
+Documentation=man:zypper(8)
+After=network-online.target
+Wants=network-online.target
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tumbleweed-updater/check
+Nice=15
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+# zypper needs broad write access (/var/lib/zypp, /var/cache/zypp, rpm db lock),
+# so this stays a plain root oneshot rather than a heavily sandboxed unit.

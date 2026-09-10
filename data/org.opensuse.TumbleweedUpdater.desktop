@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Tumbleweed Updater
+GenericName=Update Manager
+Comment=Check for and install openSUSE Tumbleweed and Flatpak updates
+Exec=tumbleweed-updater
+Icon=tumbleweed-updater
+Terminal=false
+Categories=System;PackageManager;Qt;KDE;
+Keywords=update;upgrade;zypper;dup;distribution;flatpak;patch;
+X-KDE-StartupNotify=true
+StartupWMClass=tumbleweed-updater

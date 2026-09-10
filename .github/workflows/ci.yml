@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.opensuse.org/opensuse/tumbleweed:latest
+    steps:
+      - name: Install build & test dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install --no-recommends \
+            git tar xz gzip \
+            python313 python313-pyside6 python313-pyte python313-pytest \
+            rpm-build rpmlint \
+            hicolor-icon-theme systemd-rpm-macros
+
+      - uses: actions/checkout@v4
+
+      - name: Run the test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m pytest -q
+
+      - name: Build the RPM
+        run: sh packaging/build-rpm.sh
+
+      - name: Lint the RPM
+        run: rpmlint ~/rpmbuild/RPMS/noarch/*.rpm || true
+
+      - name: Verify the RPM's declared dependencies
+        run: rpm -qp --requires ~/rpmbuild/RPMS/noarch/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: ~/rpmbuild/RPMS/noarch/*.rpm

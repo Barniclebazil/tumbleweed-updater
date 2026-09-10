@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tumbleweed-updater"
+version = "0.2.0"
+description = "Tray-based update manager for openSUSE Tumbleweed on KDE"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Barrie O'Neill Williams" }]
+dependencies = [
+    "PySide6>=6.6",
+    "pyte>=0.8",
+]
+
+[project.scripts]
+tumbleweed-updater = "tumbleweed_updater.app:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["tumbleweed_updater"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # We exec() immediately in the PTY child without touching locks.
+    "ignore:This process .* is multi-threaded, use of forkpty.*:DeprecationWarning",
+]

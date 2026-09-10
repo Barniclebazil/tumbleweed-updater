@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Tumbleweed Updater</vendor>
+  <vendor_url>https://github.com/</vendor_url>
+  <icon_name>tumbleweed-updater</icon_name>
+
+  <!-- Repository refresh + dry-run only: no password for an active local
+       session, since it changes nothing on the system. -->
+  <action id="org.opensuse.tumbleweedupdater.check">
+    <description>Check for openSUSE Tumbleweed updates</description>
+    <message>Authentication is required to refresh repositories and check for updates</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tumbleweed-updater/check</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- Rewrites a systemd timer drop-in: needs admin auth. -->
+  <action id="org.opensuse.tumbleweedupdater.set-interval">
+    <description>Change the automatic update-check schedule</description>
+    <message>Authentication is required to change the update-check schedule</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tumbleweed-updater/set-interval</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- The actual upgrade. -->
+  <action id="org.opensuse.tumbleweedupdater.update">
+    <description>Install openSUSE Tumbleweed updates</description>
+    <message>Authentication is required to upgrade the system</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tumbleweed-updater/run-update</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

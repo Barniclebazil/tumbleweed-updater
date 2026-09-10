@@ -1,0 +1,4 @@
+# Enable the background update check by default when the package is installed.
+# Users can turn it off from the app's settings ("Check for updates: manual")
+# or with: systemctl disable --now tumbleweed-updater-check.timer
+enable tumbleweed-updater-check.timer

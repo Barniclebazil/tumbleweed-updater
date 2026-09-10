@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic openSUSE Tumbleweed update check
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnBootSec=3min
+# Overridden by /etc/systemd/system/tumbleweed-updater-check.timer.d/override.conf
+# when the user picks a different cadence in the app's settings.
+OnCalendar=*-*-* 00/3:00:00
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

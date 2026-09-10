@@ -1,0 +1,68 @@
+#!/usr/bin/python3
+"""Rewrite the update-check systemd timer.
+
+Usage: set-interval <manual|hourly|every 3 hours|daily|weekly>
+
+Runs as root via pkexec. The label is validated against a fixed allow-list and
+the corresponding ``OnCalendar=`` expression is chosen here, not taken from the
+caller.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tumbleweed_updater.intervals import INTERVALS, is_valid, oncalendar_for  # noqa: E402
+from tumbleweed_updater.paths import CHECK_TIMER, CHECK_TIMER_DROPIN  # noqa: E402
+
+
+def _remove_dropin() -> None:
+    try:
+        os.unlink(CHECK_TIMER_DROPIN)
+    except FileNotFoundError:
+        pass
+    try:
+        os.rmdir(os.path.dirname(CHECK_TIMER_DROPIN))
+    except OSError:
+        pass
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or not is_valid(sys.argv[1]):
+        sys.stderr.write(
+            "usage: set-interval <" + " | ".join(INTERVALS) + ">\n"
+        )
+        return 2
+
+    label = sys.argv[1]
+    if label == "manual":
+        subprocess.run(
+            ["systemctl", "disable", "--now", CHECK_TIMER], check=False
+        )
+        _remove_dropin()
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        return 0
+
+    expr = oncalendar_for(label)
+    os.makedirs(os.path.dirname(CHECK_TIMER_DROPIN), exist_ok=True)
+    with open(CHECK_TIMER_DROPIN, "w", encoding="utf-8") as fh:
+        fh.write(
+            "# Managed by Tumbleweed Updater.\n"
+            "[Timer]\n"
+            "OnCalendar=\n"
+            f"OnCalendar={expr}\n"
+            "Persistent=true\n"
+        )
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    subprocess.run(
+        ["systemctl", "enable", "--now", CHECK_TIMER], check=False
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,95 @@
+name: Release
+
+# Tag a release:  git tag v0.2.0 && git push origin v0.2.0
+#
+# This builds the RPM, attaches it to a GitHub Release, and publishes a zypper
+# repository to GitHub Pages so users can `zypper ar` it and get updates via
+# `zypper dup` like any other package.
+#
+# Optional signing: add a repository secret GPG_PRIVATE_KEY (ASCII-armored
+# private key). Without it the published repo is unsigned (gpgcheck=0).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the Release
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.opensuse.org/opensuse/tumbleweed:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install --no-recommends \
+            git tar xz gzip rpm-build createrepo_c \
+            python313 python313-pyside6 python313-pyte python313-pytest \
+            hicolor-icon-theme systemd-rpm-macros
+
+      - uses: actions/checkout@v4
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m pytest -q
+
+      - name: Build RPM
+        run: sh packaging/build-rpm.sh
+
+      - name: Assemble the zypper repository
+        run: |
+          mkdir -p public
+          cp ~/rpmbuild/RPMS/noarch/*.rpm public/
+          if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
+            echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+            KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
+            gpg --batch --yes --armor --export "$KEYID" > public/repodata-key.gpg || true
+            for r in public/*.rpm; do
+              rpm --define "_gpg_name $KEYID" --addsign "$r"
+            done
+            GPGCHECK=1
+          else
+            GPGCHECK=0
+          fi
+          createrepo_c public/
+          if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
+            gpg --batch --yes --detach-sign --armor public/repodata/repomd.xml
+            gpg --batch --yes --armor --export "$KEYID" > public/repodata/repomd.xml.key
+          fi
+          BASE="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+          cat > public/tumbleweed-updater.repo <<EOF
+          [tumbleweed-updater]
+          name=Tumbleweed Updater
+          baseurl=$BASE
+          enabled=1
+          autorefresh=1
+          gpgcheck=$GPGCHECK
+          repo_gpgcheck=$GPGCHECK
+          type=rpm-md
+          EOF
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: public/*.rpm
+          generate_release_notes: true
+
+  deploy-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
