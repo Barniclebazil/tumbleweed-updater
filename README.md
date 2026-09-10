@@ -30,7 +30,7 @@ Once a release is published (GitHub Pages repo, see below):
 
 ```sh
 sudo zypper addrepo -f -G \
-  https://YOURUSER.github.io/tumbleweed-updater/tumbleweed-updater.repo
+  https://barniclebazil.github.io/tumbleweed-updater/tumbleweed-updater.repo
 sudo zypper install tumbleweed-updater
 ```
 
@@ -82,29 +82,17 @@ sh packaging/build-rpm.sh --install   # rebuild + zypper upgrade in one step
 then quit the running instance from the tray and relaunch it (the background
 check helper picks up new code on its next run by itself).
 
-For hands-off updates like the rest of Tumbleweed, publish to a repo instead:
-
-```sh
-# local repo
-createrepo_c ~/rpmbuild/RPMS/noarch
-sudo zypper ar ~/rpmbuild/RPMS/noarch tw-updater-local
-# after each `sh packaging/build-rpm.sh` + `createrepo_c ~/rpmbuild/RPMS/noarch`,
-# a normal `sudo zypper dup` upgrades this package too
-```
-
-or push the spec + tarball to build.opensuse.org (OBS builds and *signs* it, and
-`zypper dup` then updates it automatically with no `--allow-unsigned-rpm`).
+For hands-off updates like the rest of Tumbleweed, cut a tagged release
+(see *Publishing releases*): the GitHub Pages repo updates, and any machine that
+added it with `zypper addrepo` then picks up the new version on `zypper dup`.
 
 ## Publishing releases
 
-* **GitHub** — `.github/workflows/ci.yml` runs the tests and builds the RPM on
-  every push. `.github/workflows/release.yml` fires on a `v*` tag: it attaches
-  the RPM to a GitHub Release and publishes a zypper repo to GitHub Pages
-  (`https://<you>.github.io/tumbleweed-updater/`). Add a `GPG_PRIVATE_KEY`
-  repository secret to get a signed repo.
-* **OBS** — `packaging/_service` pulls the source from GitHub so
-  build.opensuse.org can build and sign it; then
-  `zypper ar obs://home:<you>:tumbleweed-updater/openSUSE_Tumbleweed`.
+`.github/workflows/ci.yml` runs the tests and builds the RPM on every push.
+`.github/workflows/release.yml` fires on a `v*` tag: it attaches the RPM to a
+GitHub Release and publishes a zypper repo to GitHub Pages at
+<https://barniclebazil.github.io/tumbleweed-updater/>. Add a `GPG_PRIVATE_KEY`
+repository secret to get a signed repo.
 
 ## Development
 

@@ -4,7 +4,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>Tumbleweed Updater</vendor>
-  <vendor_url>https://github.com/</vendor_url>
+  <vendor_url>https://github.com/Barniclebazil/tumbleweed-updater</vendor_url>
   <icon_name>tumbleweed-updater</icon_name>
 
   <!-- Repository refresh + dry-run only: no password for an active local

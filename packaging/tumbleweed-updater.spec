@@ -7,7 +7,7 @@ Version:        0.2.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
-URL:            https://github.com/
+URL:            https://github.com/Barniclebazil/tumbleweed-updater
 Source0:        %{name}-%{version}.tar.xz
 BuildArch:      noarch
 
@@ -75,5 +75,5 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 * Thu Sep 10 2026 Barrie O'Neill Williams - 0.2.0
 - Configurable embedded-terminal appearance: font, size, background and text
   colour (Settings -> Terminal appearance).
-* Wed Sep 10 2026 Barrie O'Neill Williams - 0.1.0
+* Thu Sep 10 2026 Barrie O'Neill Williams - 0.1.0
 - Initial package.
