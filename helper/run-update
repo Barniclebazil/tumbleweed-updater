@@ -2,17 +2,24 @@
 # Interactive openSUSE Tumbleweed system upgrade.
 #
 # Invoked as root through pkexec by Tumbleweed Updater, attached to the GUI's
-# embedded terminal so the user answers zypper's prompts directly. Any extra
-# arguments are passed straight to "zypper dup".
+# embedded terminal so the user answers zypper's prompts directly.
+#
+# Usage: run-update [--cleanup] [extra zypper dup args...]
+#   --cleanup   run "zypper clean" after a successful upgrade
 #
 # Btrfs snapshots are handled by zypper itself (snapper-zypp-plugin); this
 # script does not touch snapshots.
 
-set -e
+set -eu
+
+CLEANUP=0
+if [ "${1:-}" = "--cleanup" ]; then
+    CLEANUP=1
+    shift
+fi
 
 export TERM="${TERM:-xterm-256color}"
 export LANG="${LANG:-C.UTF-8}"
-# Never page output inside the embedded terminal.
 export PAGER=cat
 export SYSTEMD_PAGER=cat
 
@@ -20,4 +27,20 @@ printf '\033[1m==> Refreshing repositories\033[0m\n'
 zypper refresh
 
 printf '\033[1m==> zypper dup %s\033[0m\n' "$*"
-exec zypper dup "$@"
+set +e
+zypper dup "$@"
+rc=$?
+set -e
+
+# 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
+case "$rc" in
+    0 | 102 | 103) ;;
+    *) exit "$rc" ;;
+esac
+
+if [ "$CLEANUP" = 1 ]; then
+    printf '\033[1m==> Freeing up disk space (zypper clean)\033[0m\n'
+    zypper clean || true
+fi
+
+exit 0

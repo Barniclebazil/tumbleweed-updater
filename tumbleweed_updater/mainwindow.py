@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from . import APP_NAME
 from .icons import window_icon
 from .runner import UpdateRunner
-from .settings import SettingsStore
+from .settings import SettingsStore, dup_args_from_prefs
 from .settingsdialog import SettingsDialog
 from .sources import Action, UpdateStatus, human_bytes
 from .terminal import TerminalWidget
@@ -66,6 +66,7 @@ def _relative_time(iso: str) -> str:
 class MainWindow(QMainWindow):
     stateChanged = Signal(object, str)  # TrayState, tooltip
     checkRequested = Signal()
+    settingsApplied = Signal()  # emitted after the settings dialog is accepted
 
     def __init__(self, settings: SettingsStore, privileged) -> None:
         super().__init__()
@@ -75,7 +76,7 @@ class MainWindow(QMainWindow):
         self._flatpak_checked = False
 
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(window_icon())
+        self.setWindowIcon(window_icon(self._settings.load().icon_style))
         self.resize(760, 620)
 
         self._build_ui()
@@ -270,6 +271,25 @@ class MainWindow(QMainWindow):
             lines.append("  • flatpak update (system)")
         if do_fp_user:
             lines.append("  • flatpak --user update")
+
+        if do_zypper:
+            notes = []
+            if prefs.dup_allow_vendor_change:
+                notes.append("allow packages to change vendor/repository")
+            if prefs.dup_non_interactive:
+                notes.append(
+                    "skip confirmation prompts — zypper auto-applies its first "
+                    "fix for any conflict"
+                )
+            if prefs.dup_download_in_advance:
+                notes.append("download everything before installing")
+            if prefs.cleanup_after_update:
+                notes.append("clear the package cache afterwards")
+            if notes:
+                lines.append("")
+                lines.append("Options in effect:")
+                lines += [f"  • {n}" for n in notes]
+
         lines.append("\nYou will be asked for the administrator password.")
         if (
             QMessageBox.question(
@@ -283,10 +303,10 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        dup_args = prefs.zypper_dup_args.split() if prefs.zypper_dup_args else []
         steps = self._runner.build_queue(
             do_zypper=do_zypper,
-            dup_args=dup_args,
+            dup_args=dup_args_from_prefs(prefs),
+            cleanup=prefs.cleanup_after_update,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
         )
@@ -303,16 +323,32 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self._statusbar(message)
         if ok and self._status.zypper.need_reboot:
-            QMessageBox.information(
-                self,
-                "Reboot recommended",
-                "The update included components that need a reboot "
-                "(kernel, glibc, systemd, …). Reboot when convenient.",
-            )
+            self._handle_reboot_needed()
         if not ok:
             self._show_banner(message)
         # Re-check so the list and counts reflect reality.
         self._on_check_clicked()
+
+    def _handle_reboot_needed(self) -> None:
+        body = (
+            "The update installed components that need a reboot to take effect "
+            "(kernel, glibc, systemd, …)."
+        )
+        if self._settings.load().reboot_action == "offer":
+            if (
+                QMessageBox.question(
+                    self,
+                    "Reboot now?",
+                    body + "\n\nReboot now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                == QMessageBox.Yes
+            ):
+                # logind allows an active local session to reboot without pkexec.
+                QProcess.startDetached("systemctl", ["reboot"])
+        else:
+            QMessageBox.information(self, "Reboot recommended", body)
 
     # -- rendering ----------------------------------------------------------- #
 
@@ -461,7 +497,9 @@ class MainWindow(QMainWindow):
             bg=p.term_bg,
             fg=p.term_fg,
         )
+        self.setWindowIcon(window_icon(p.icon_style))
         self._render()
+        self.settingsApplied.emit()
 
     # -- window lifecycle ----------------------------------------------- #
 

@@ -25,11 +25,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .icons import idle_icon, text_color
 from .intervals import INTERVALS
 from .settings import (
     DEFAULT_TERM_BG,
     DEFAULT_TERM_FG,
     DEFAULT_TERM_FONT_SIZE,
+    ICON_STYLES,
+    REBOOT_ACTIONS,
     Prefs,
     SettingsStore,
 )
@@ -125,9 +128,21 @@ class SettingsDialog(QDialog):
         self._flatpak.setChecked(self._prefs.include_flatpak)
         form.addRow("", self._flatpak)
 
-        self._dup_args = QLineEdit(self._prefs.zypper_dup_args)
-        self._dup_args.setPlaceholderText("(none)")
-        form.addRow("Extra 'zypper dup' options:", self._dup_args)
+        layout.addWidget(self._build_update_group())
+
+        self._icon_style = QComboBox()
+        for key, label in ICON_STYLES.items():
+            self._icon_style.addItem(label, key)
+        cur = self._icon_style.findData(self._prefs.icon_style)
+        self._icon_style.setCurrentIndex(cur if cur >= 0 else 0)
+        self._icon_preview = QLabel()
+        self._icon_preview.setFixedSize(28, 28)
+        self._icon_style.currentIndexChanged.connect(lambda _i: self._preview_icon())
+        icon_row = QHBoxLayout()
+        icon_row.addWidget(self._icon_style, 1)
+        icon_row.addWidget(self._icon_preview)
+        form.addRow("Tray icon:", icon_row)
+        self._preview_icon()
 
         layout.addWidget(self._build_terminal_group())
 
@@ -137,6 +152,83 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    # -- update behaviour ----------------------------------------------------- #
+
+    def _build_update_group(self) -> QGroupBox:
+        box = QGroupBox("Update behaviour")
+        grid = QFormLayout(box)
+
+        self._allow_vendor = QCheckBox("Allow packages to change vendor")
+        self._allow_vendor.setChecked(self._prefs.dup_allow_vendor_change)
+        self._allow_vendor.setToolTip(
+            "Adds --allow-vendor-change. Normally zypper dup keeps each package "
+            "with the repository that first provided it. Enable this only if you "
+            "deliberately use a third-party repo such as Packman (multimedia "
+            "codecs) and want its builds to replace the openSUSE ones.\n\n"
+            "Warning: it also lets any enabled repo - including one added by "
+            "mistake - take over system packages."
+        )
+        grid.addRow("", self._allow_vendor)
+
+        self._non_interactive = QCheckBox("Install without asking me to confirm")
+        self._non_interactive.setChecked(self._prefs.dup_non_interactive)
+        self._non_interactive.setToolTip(
+            "Adds -y --auto-agree-with-licenses, so zypper never pauses for "
+            "'Continue? [y/n]' and auto-accepts licence agreements.\n\n"
+            "Warning: if the upgrade hits a dependency conflict, zypper "
+            "automatically applies its first proposed fix, which can remove or "
+            "downgrade packages unexpectedly. On a rolling release, leave this "
+            "off unless it is a routine update and you will still check the "
+            "terminal output."
+        )
+        grid.addRow("", self._non_interactive)
+
+        self._download_first = QCheckBox("Download all packages before installing")
+        self._download_first.setChecked(self._prefs.dup_download_in_advance)
+        self._download_first.setToolTip(
+            "Adds --download in-advance. Downloads every package first, then "
+            "installs them in one go. Safer on an unreliable connection - a "
+            "dropped download cannot leave the system half-upgraded - but uses "
+            "more disk during the update."
+        )
+        grid.addRow("", self._download_first)
+
+        self._cleanup = QCheckBox("Free up disk space after updating")
+        self._cleanup.setChecked(self._prefs.cleanup_after_update)
+        self._cleanup.setToolTip(
+            "Runs 'zypper clean' after a successful update to delete the "
+            "downloaded package files (they are not needed once installed). "
+            "Frees disk space; completely safe."
+        )
+        grid.addRow("", self._cleanup)
+
+        self._reboot_action = QComboBox()
+        for key, label in REBOOT_ACTIONS.items():
+            self._reboot_action.addItem(label, key)
+        idx = self._reboot_action.findData(self._prefs.reboot_action)
+        self._reboot_action.setCurrentIndex(idx if idx >= 0 else 0)
+        self._reboot_action.setToolTip(
+            "Kernel, glibc, systemd and dbus updates need a reboot to take "
+            "effect."
+        )
+        grid.addRow("When an update needs a reboot:", self._reboot_action)
+
+        self._dup_args = QLineEdit(self._prefs.zypper_dup_args)
+        self._dup_args.setPlaceholderText("(none)")
+        self._dup_args.setToolTip(
+            "Anything typed here is appended to 'zypper dup' as-is, after the "
+            "options set by the checkboxes above."
+        )
+        grid.addRow("Extra 'zypper dup' options:", self._dup_args)
+
+        return box
+
+    # -- tray icon ---------------------------------------------------------- #
+
+    def _preview_icon(self) -> None:
+        style = self._icon_style.currentData()
+        self._icon_preview.setPixmap(idle_icon(style, text_color()).pixmap(24, 24))
 
     # -- terminal appearance ---------------------------------------------- #
 
@@ -234,6 +326,12 @@ class SettingsDialog(QDialog):
             term_font_size=self._font_size.value(),
             term_bg=self._bg_btn.color_name(),
             term_fg=self._fg_btn.color_name(),
+            icon_style=self._icon_style.currentData(),
+            dup_allow_vendor_change=self._allow_vendor.isChecked(),
+            dup_non_interactive=self._non_interactive.isChecked(),
+            dup_download_in_advance=self._download_first.isChecked(),
+            cleanup_after_update=self._cleanup.isChecked(),
+            reboot_action=self._reboot_action.currentData(),
         )
         self._store.save(new)
         self._apply_autostart(self._autostart.isChecked())

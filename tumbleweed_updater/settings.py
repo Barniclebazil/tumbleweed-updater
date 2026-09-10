@@ -24,7 +24,18 @@ __all__ = [
     "DEFAULT_TERM_BG",
     "DEFAULT_TERM_FG",
     "DEFAULT_TERM_FONT_SIZE",
+    "ICON_STYLES",
+    "DEFAULT_ICON_STYLE",
+    "REBOOT_ACTIONS",
+    "dup_args_from_prefs",
 ]
+
+# What to do when an upgrade reports that a reboot is needed.
+REBOOT_ACTIONS = {
+    "notify": "Just tell me",
+    "offer": "Offer to reboot now",
+}
+DEFAULT_REBOOT_ACTION = "notify"
 
 
 # Terminal appearance defaults. An empty font family means "the system's
@@ -32,6 +43,17 @@ __all__ = [
 DEFAULT_TERM_BG = "#1b1b1b"
 DEFAULT_TERM_FG = "#f0f0f0"
 DEFAULT_TERM_FONT_SIZE = 10
+
+# Tray/window icon styles -> label. Each name has a matching
+# data/icons/styles/<name>.svg (monochrome, currentColor stroke).
+ICON_STYLES = {
+    "tumbleweed": "Tumbleweed",
+    "refresh": "Refresh arrows",
+    "arrow": "Up arrow",
+    "shield": "Shield",
+    "package": "Package box",
+}
+DEFAULT_ICON_STYLE = "tumbleweed"
 
 
 @dataclass
@@ -43,11 +65,19 @@ class Prefs:
     # Extra arguments appended to ``zypper dup`` (advanced; empty by default).
     zypper_dup_args: str = ""
     include_flatpak: bool = True
+    # Update behaviour toggles (all map to well-known zypper dup options).
+    dup_allow_vendor_change: bool = False
+    dup_non_interactive: bool = False
+    dup_download_in_advance: bool = False
+    cleanup_after_update: bool = True
+    reboot_action: str = DEFAULT_REBOOT_ACTION  # key of REBOOT_ACTIONS
     # Embedded-terminal appearance.
     term_font_family: str = ""
     term_font_size: int = DEFAULT_TERM_FONT_SIZE
     term_bg: str = DEFAULT_TERM_BG
     term_fg: str = DEFAULT_TERM_FG
+    # Tray/window icon style (key of ICON_STYLES).
+    icon_style: str = DEFAULT_ICON_STYLE
 
 
 class SettingsStore:
@@ -73,6 +103,26 @@ class SettingsStore:
             ),
             term_bg=s.value("term/bg", d.term_bg, str) or d.term_bg,
             term_fg=s.value("term/fg", d.term_fg, str) or d.term_fg,
+            icon_style=_one_of(
+                s.value("ui/iconStyle", d.icon_style, str), ICON_STYLES, d.icon_style
+            ),
+            dup_allow_vendor_change=_as_bool(
+                s.value("zypper/allowVendorChange", d.dup_allow_vendor_change)
+            ),
+            dup_non_interactive=_as_bool(
+                s.value("zypper/nonInteractive", d.dup_non_interactive)
+            ),
+            dup_download_in_advance=_as_bool(
+                s.value("zypper/downloadInAdvance", d.dup_download_in_advance)
+            ),
+            cleanup_after_update=_as_bool(
+                s.value("update/cleanup", d.cleanup_after_update)
+            ),
+            reboot_action=_one_of(
+                s.value("update/rebootAction", d.reboot_action, str),
+                REBOOT_ACTIONS,
+                d.reboot_action,
+            ),
         )
 
     def save(self, p: Prefs) -> None:
@@ -87,6 +137,12 @@ class SettingsStore:
         s.setValue("term/fontSize", p.term_font_size)
         s.setValue("term/bg", p.term_bg)
         s.setValue("term/fg", p.term_fg)
+        s.setValue("ui/iconStyle", p.icon_style)
+        s.setValue("zypper/allowVendorChange", p.dup_allow_vendor_change)
+        s.setValue("zypper/nonInteractive", p.dup_non_interactive)
+        s.setValue("zypper/downloadInAdvance", p.dup_download_in_advance)
+        s.setValue("update/cleanup", p.cleanup_after_update)
+        s.setValue("update/rebootAction", p.reboot_action)
         s.sync()
 
 
@@ -102,3 +158,22 @@ def _as_int(value: object, default: int) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _one_of(value: object, choices, default: str) -> str:
+    return value if isinstance(value, str) and value in choices else default
+
+
+def dup_args_from_prefs(p: Prefs) -> list[str]:
+    """Turn the update-behaviour toggles + free-text field into ``zypper dup`` args."""
+    args: list[str] = []
+    if p.dup_non_interactive:
+        args += ["-y", "--auto-agree-with-licenses"]
+    if p.dup_allow_vendor_change:
+        args.append("--allow-vendor-change")
+    if p.dup_download_in_advance:
+        args += ["--download", "in-advance"]
+    for token in p.zypper_dup_args.split():
+        if token not in args:
+            args.append(token)
+    return args

@@ -16,7 +16,8 @@ from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME
-from .icons import idle_icon, updates_icon
+from .icons import idle_icon, text_color, updates_icon
+from .settings import DEFAULT_ICON_STYLE, SettingsStore
 
 
 class TrayState(Enum):
@@ -27,8 +28,9 @@ class TrayState(Enum):
 
 
 class TrayIcon(QSystemTrayIcon):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, settings: SettingsStore | None = None, parent=None) -> None:
         super().__init__(parent)
+        self._settings = settings
         self._state = TrayState.IDLE
 
         self._menu = QMenu()
@@ -63,13 +65,23 @@ class TrayIcon(QSystemTrayIcon):
         self._refresh_icon()
         self.act_update.setEnabled(state == TrayState.UPDATES)
 
+    def reload(self) -> None:
+        """Re-render the icon (e.g. after the icon style changed in settings)."""
+        self._refresh_icon()
+
     # -- internals --------------------------------------------------------- #
 
+    def _style(self) -> str:
+        if self._settings is None:
+            return DEFAULT_ICON_STYLE
+        return self._settings.load().icon_style
+
     def _refresh_icon(self) -> None:
+        style = self._style()
         if self._state in (TrayState.UPDATES, TrayState.BUSY):
-            self.setIcon(updates_icon())
+            self.setIcon(updates_icon(style))
         else:
-            self.setIcon(idle_icon(_text_color()))
+            self.setIcon(idle_icon(style, text_color()))
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -78,7 +90,3 @@ class TrayIcon(QSystemTrayIcon):
             QSystemTrayIcon.MiddleClick,
         ):
             self.act_open.trigger()
-
-
-def _text_color():
-    return QGuiApplication.palette().windowText().color()

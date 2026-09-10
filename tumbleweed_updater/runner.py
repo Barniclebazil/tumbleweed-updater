@@ -52,17 +52,17 @@ class UpdateRunner(QObject):
         *,
         do_zypper: bool,
         dup_args: list[str] | None = None,
+        cleanup: bool = False,
         do_flatpak_system: bool = False,
         do_flatpak_user: bool = False,
     ) -> list[Step]:
         steps: list[Step] = []
         if do_zypper:
-            steps.append(
-                Step(
-                    "Upgrading the system with zypper dup",
-                    ["pkexec", resolve_helper(HELPER_RUN_UPDATE), *(dup_args or [])],
-                )
-            )
+            argv = ["pkexec", resolve_helper(HELPER_RUN_UPDATE)]
+            if cleanup:
+                argv.append("--cleanup")
+            argv += dup_args or []
+            steps.append(Step("Upgrading the system with zypper dup", argv))
         if do_flatpak_system:
             steps.append(Step("Updating system Flatpaks", ["flatpak", "update"]))
         if do_flatpak_user:
@@ -110,7 +110,8 @@ class UpdateRunner(QObject):
             self._session.deleteLater()
             self._session = None
 
-        if code == 0:
+        # zypper: 0 ok, 102 reboot needed, 103 restart needed - all successful.
+        if code in (0, 102, 103):
             self._terminal.append_notice("\x1b[1;32m*** done ***\x1b[0m")
             self._next()
             return

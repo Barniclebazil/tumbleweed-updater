@@ -67,7 +67,6 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_unitdir}/tumbleweed-updater-check.timer
 %{_prefix}/lib/systemd/system-preset/50-tumbleweed-updater.preset
 %{_datadir}/icons/hicolor/scalable/apps/tumbleweed-updater.svg
-%{_datadir}/icons/hicolor/scalable/apps/tumbleweed-updater-updates.svg
 %{_datadir}/tumbleweed-updater/
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 

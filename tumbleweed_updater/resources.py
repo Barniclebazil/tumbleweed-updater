@@ -27,3 +27,8 @@ def icon_file(name: str) -> str | None:
     if os.path.exists(themed):
         return themed
     return find(os.path.join("icons", f"{name}.svg"))
+
+
+def style_icon_file(style: str) -> str | None:
+    """Path to the SVG for a tray icon style (data/icons/styles/<style>.svg)."""
+    return find(os.path.join("icons", "styles", f"{style}.svg"))

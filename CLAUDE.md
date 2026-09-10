@@ -59,6 +59,16 @@ runner.py  command queue
   `type=`) and `edition`/`edition-old`.
 * **`intervals.py`** is likewise Qt-free — the label→`OnCalendar=` map shared by
   `settings.py` and `helper/set-interval`.
+* **`icons.py`** renders each tray/window icon from one monochrome SVG in
+  `data/icons/styles/<name>.svg` (`currentColor` stroke): idle → palette text
+  colour, "updates" → openSUSE orange. Style list is `settings.ICON_STYLES`.
+  Changing it in the dialog → `MainWindow.settingsApplied` → `app` → `tray.reload()`.
+* **Update options** — `settings.dup_args_from_prefs()` turns the "Update
+  behaviour" toggles into `zypper dup` args (`-y --auto-agree-with-licenses`,
+  `--allow-vendor-change`, `--download in-advance`) plus the free-text field,
+  de-duplicated. `helper/run-update [--cleanup] <args…>` forwards them, runs
+  `zypper clean` after on `--cleanup`, and maps zypper exit **102/103**
+  (reboot/restart needed) to success. `runner.py` also treats 0/102/103 as OK.
 * **`terminal.py`** is a real terminal: `pty_session.py` runs the child on a PTY
   wired to a `QSocketNotifier`; `_Screen` subclasses `pyte.Screen` to keep a
   scrollback deque. `runner.py` drives a queue of steps (zypper dup → flatpak

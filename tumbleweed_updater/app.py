@@ -47,23 +47,25 @@ class Application:
         if _existing_instance_takeover(action):
             raise SystemExit(0)
 
+        self.settings = SettingsStore()
+
         self.qt.setApplicationName(APP_NAME)
         self.qt.setApplicationDisplayName(APP_NAME)
         self.qt.setDesktopFileName(APP_ID)
-        self.qt.setWindowIcon(window_icon())
+        self.qt.setWindowIcon(window_icon(self.settings.load().icon_style))
         self.qt.setQuitOnLastWindowClosed(False)
 
         self._server = QLocalServer(self.qt)
         self._server.newConnection.connect(self._on_ipc)
         self._server.listen(_SOCKET_NAME)
 
-        self.settings = SettingsStore()
         self.privileged = PrivilegedRunner(self.qt)
 
         self.window = MainWindow(self.settings, self.privileged)
         self.window.stateChanged.connect(self._on_state)
+        self.window.settingsApplied.connect(self._on_settings_applied)
 
-        self.tray = TrayIcon(self.qt)
+        self.tray = TrayIcon(self.settings, self.qt)
         self.tray.act_open.triggered.connect(self.window.show_and_raise)
         self.tray.act_check.triggered.connect(self.window.trigger_check)
         self.tray.act_update.triggered.connect(self.window.trigger_update)
@@ -148,6 +150,9 @@ class Application:
 
     def _on_state(self, state: TrayState, tooltip: str) -> None:
         self.tray.set_state(state, tooltip)
+
+    def _on_settings_applied(self) -> None:
+        self.tray.reload()
 
     def _quit(self) -> None:
         if self.window.runner_active:

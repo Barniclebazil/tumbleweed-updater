@@ -50,6 +50,33 @@ def test_queue_runs_all_steps_in_order(app):
     assert not runner.is_running
 
 
+def test_zypper_reboot_exit_codes_count_as_success(app):
+    term = TerminalWidget()
+    term.resize(600, 300)
+    runner = UpdateRunner(term)
+    results = []
+    runner.finished.connect(lambda ok, msg: results.append((ok, msg)))
+
+    # 102 = ZYPPER_EXIT_INF_REBOOT_NEEDED
+    runner.start([
+        Step("upgrade", ["/bin/sh", "-c", "echo upgraded; exit 102"]),
+        Step("flatpak", ["/bin/sh", "-c", "echo flatpak-ran"]),
+    ])
+    assert _wait(lambda: results != [])
+    assert results[0][0] is True
+    assert "flatpak-ran" in term.buffer_text()
+
+
+def test_cleanup_flag_added_to_argv(app):
+    term = TerminalWidget()
+    runner = UpdateRunner(term)
+    with_cleanup = runner.build_queue(do_zypper=True, dup_args=["--x"], cleanup=True)
+    without = runner.build_queue(do_zypper=True, dup_args=["--x"], cleanup=False)
+    assert "--cleanup" in with_cleanup[0].argv
+    assert with_cleanup[0].argv.index("--cleanup") < with_cleanup[0].argv.index("--x")
+    assert "--cleanup" not in without[0].argv
+
+
 def test_queue_stops_on_failure(app):
     term = TerminalWidget()
     term.resize(600, 300)
