@@ -31,7 +31,7 @@ trap 'rm -rf "$staging"' EXIT
 mkdir "$staging/$NAME-$VERSION"
 tar --exclude=.git --exclude=__pycache__ --exclude='*.pyc' \
     --exclude=.pytest_cache --exclude='./venv' --exclude='./.venv' \
-    --exclude='./packaging/*.tar.*' --exclude='./*.rpm' \
+    --exclude='./dist' --exclude='./packaging/*.tar.*' --exclude='./*.rpm' \
     -cf - . | tar -xf - -C "$staging/$NAME-$VERSION"
 tar -C "$staging" -cJf "$TOP/SOURCES/$NAME-$VERSION.tar.xz" "$NAME-$VERSION"
 
@@ -40,7 +40,11 @@ cp "$SPEC" "$TOP/SPECS/"
 echo ">>> rpmbuild -bb"
 rpmbuild -bb "$TOP/SPECS/$NAME.spec"
 
-RPM=$(find "$TOP/RPMS" -name "$NAME-$VERSION-*.noarch.rpm" | head -n1)
+# Copy the finished RPM to ./dist/ so callers (and CI) have a predictable path
+# regardless of where this distro's rpmbuild puts %_topdir.
+mkdir -p dist
+find "$TOP/RPMS" -name "$NAME-$VERSION-*.rpm" -exec cp {} dist/ \;
+RPM=$(find dist -name "$NAME-$VERSION-*.noarch.rpm" | head -n1)
 echo
 echo ">>> Built: $RPM"
 

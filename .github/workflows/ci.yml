@@ -31,12 +31,12 @@ jobs:
         run: sh packaging/build-rpm.sh
 
       - name: Lint the RPM
-        run: rpmlint ~/rpmbuild/RPMS/noarch/*.rpm || true
+        run: rpmlint dist/*.rpm || true
 
-      - name: Verify the RPM's declared dependencies
-        run: rpm -qp --requires ~/rpmbuild/RPMS/noarch/*.rpm
+      - name: Show the RPM's declared dependencies
+        run: rpm -qp --requires dist/*.rpm
 
       - uses: actions/upload-artifact@v4
         with:
           name: rpm
-          path: ~/rpmbuild/RPMS/noarch/*.rpm
+          path: dist/*.rpm

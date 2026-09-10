@@ -45,7 +45,7 @@ jobs:
       - name: Assemble the zypper repository
         run: |
           mkdir -p public
-          cp ~/rpmbuild/RPMS/noarch/*.rpm public/
+          cp dist/*.rpm public/
           if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
             echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
             KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
@@ -62,7 +62,8 @@ jobs:
             gpg --batch --yes --detach-sign --armor public/repodata/repomd.xml
             gpg --batch --yes --armor --export "$KEYID" > public/repodata/repomd.xml.key
           fi
-          BASE="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          BASE="https://$OWNER.github.io/${{ github.event.repository.name }}"
           cat > public/tumbleweed-updater.repo <<EOF
           [tumbleweed-updater]
           name=Tumbleweed Updater
