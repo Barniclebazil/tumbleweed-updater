@@ -91,7 +91,10 @@ runner.py  command queue
 `Makefile` mirrors it and `packaging/tumbleweed-updater.spec`'s `%install`
 just calls it (`DESTDIR=… PREFIX=… SITELIB=… sh packaging/install.sh`). All
 three plus `paths.py` must agree on every location. `packaging/build-rpm.sh`
-rolls the `.tar.xz` and runs `rpmbuild -bb`. Layout: Python package →
+rolls the `.tar.xz`, runs `rpmbuild -bb`, and copies the result to `dist/`.
+`packaging/release.sh <version> <note>` bumps the version in all three places
+(`__init__.py`, `pyproject.toml`, spec `Version:`) + changelog, then commits,
+tags `v<version>` and pushes — the `release.yml` workflow does the rest. Layout: Python package →
 `%{python3_sitelib}`; helpers → `/usr/libexec/tumbleweed-updater/`; plus the
 polkit policy, the systemd `check` service/timer + `system-preset` (enables the
 timer on install), hicolor SVG icons, a second icon copy under

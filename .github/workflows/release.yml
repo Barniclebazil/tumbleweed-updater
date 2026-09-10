@@ -43,37 +43,11 @@ jobs:
         run: sh packaging/build-rpm.sh
 
       - name: Assemble the zypper repository
-        run: |
-          mkdir -p public
-          cp dist/*.rpm public/
-          if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
-            echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-            KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
-            gpg --batch --yes --armor --export "$KEYID" > public/repodata-key.gpg || true
-            for r in public/*.rpm; do
-              rpm --define "_gpg_name $KEYID" --addsign "$r"
-            done
-            GPGCHECK=1
-          else
-            GPGCHECK=0
-          fi
-          createrepo_c public/
-          if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
-            gpg --batch --yes --detach-sign --armor public/repodata/repomd.xml
-            gpg --batch --yes --armor --export "$KEYID" > public/repodata/repomd.xml.key
-          fi
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          BASE="https://$OWNER.github.io/${{ github.event.repository.name }}"
-          cat > public/tumbleweed-updater.repo <<EOF
-          [tumbleweed-updater]
-          name=Tumbleweed Updater
-          baseurl=$BASE
-          enabled=1
-          autorefresh=1
-          gpgcheck=$GPGCHECK
-          repo_gpgcheck=$GPGCHECK
-          type=rpm-md
-          EOF
+        env:
+          PAGES_OWNER: ${{ github.repository_owner }}
+          PAGES_REPO: ${{ github.event.repository.name }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: sh packaging/make-repo.sh
 
       - uses: actions/upload-pages-artifact@v3
         with:

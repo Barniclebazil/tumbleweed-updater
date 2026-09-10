@@ -88,11 +88,24 @@ added it with `zypper addrepo` then picks up the new version on `zypper dup`.
 
 ## Publishing releases
 
+To ship a new version:
+
+```sh
+sh packaging/release.sh 0.2.1 "one-line summary of what changed"
+```
+
+That bumps the version in `tumbleweed_updater/__init__.py`, `pyproject.toml` and
+the spec, adds a changelog entry, runs the tests, commits, tags `v0.2.1`, and
+pushes.
+
 `.github/workflows/ci.yml` runs the tests and builds the RPM on every push.
-`.github/workflows/release.yml` fires on a `v*` tag: it attaches the RPM to a
-GitHub Release and publishes a zypper repo to GitHub Pages at
-<https://barniclebazil.github.io/tumbleweed-updater/>. Add a `GPG_PRIVATE_KEY`
-repository secret to get a signed repo.
+`.github/workflows/release.yml` fires on the `v*` tag: it attaches the RPM to a
+GitHub Release and republishes the zypper repo to GitHub Pages at
+<https://barniclebazil.github.io/tumbleweed-updater/>. Machines that added the
+repo pick up the new version on their next `zypper dup`.
+
+Add a `GPG_PRIVATE_KEY` repository secret (ASCII-armored private key) to get a
+signed repo; then the published `.repo` sets `gpgcheck=1` automatically.
 
 ## Development
 
