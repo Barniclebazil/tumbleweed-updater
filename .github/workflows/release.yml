@@ -28,9 +28,9 @@ jobs:
         run: |
           zypper --non-interactive --gpg-auto-import-keys refresh
           zypper --non-interactive install --no-recommends \
-            git tar xz gzip rpm-build createrepo_c \
-            python313 python313-pyside6 python313-pyte python313-pytest \
-            hicolor-icon-theme systemd-rpm-macros
+            git tar xz gzip findutils rpm-build createrepo_c gpg2 \
+            python3 python3-pyside6 python3-pyte python3-pytest \
+            python-rpm-macros systemd-rpm-macros hicolor-icon-theme
 
       - uses: actions/checkout@v4
 
