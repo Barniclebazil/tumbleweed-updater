@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.3.0
+Version:        0.3.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Fri Sep 11 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.3.1
+- User-facing README rewrite, shield as the default tray icon, and a single combined update-confirmation/password prompt.
+
 * Thu Sep 10 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.3.0
 - Selectable tray icon; toggles for vendor change, unattended install, pre-download, cleanup; reboot choice
 
