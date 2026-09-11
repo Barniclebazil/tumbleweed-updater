@@ -51,6 +51,18 @@ _KEYMAP = {
 }
 
 
+def build_terminal_font(family: str, size: int) -> QFont:
+    if family:
+        font = QFont(family)
+    else:
+        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    font.setPointSize(max(6, int(size)))
+    font.setStyleHint(QFont.Monospace)
+    font.setFixedPitch(True)
+    font.setKerning(False)
+    return font
+
+
 class _Screen(pyte.Screen):
     """A pyte screen that keeps lines scrolled off the top in a deque."""
 
@@ -100,15 +112,7 @@ class TerminalWidget(QAbstractScrollArea):
     # -- appearance ------------------------------------------------------- #
 
     def _apply_font(self, family: str, size: int) -> None:
-        if family:
-            font = QFont(family)
-        else:
-            font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        font.setPointSize(max(6, int(size)))
-        font.setStyleHint(QFont.Monospace)
-        font.setFixedPitch(True)
-        font.setKerning(False)
-        self.setFont(font)
+        self.setFont(build_terminal_font(family, size))
         self._recompute_metrics()
 
     def apply_appearance(

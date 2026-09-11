@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from PySide6.QtCore import QProcess, Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -29,7 +29,7 @@ from .runner import UpdateRunner
 from .settings import SettingsStore, dup_args_from_prefs
 from .settingsdialog import SettingsDialog
 from .sources import Action, UpdateStatus, human_bytes
-from .terminal import TerminalWidget
+from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
 from .workers import FlatpakChecker
 
@@ -140,11 +140,13 @@ class MainWindow(QMainWindow):
         top_l.addWidget(self._tree, 1)
         self._splitter.addWidget(top)
 
+        p = self._settings.load()
+        self._apply_list_appearance(p)
+
         self._terminal_box = QWidget()
         tb_l = QVBoxLayout(self._terminal_box)
         tb_l.setContentsMargins(0, 0, 0, 0)
         tb_l.addWidget(QLabel("Terminal — answer zypper's prompts here:"))
-        p = self._settings.load()
         self._terminal = TerminalWidget(
             font_family=p.term_font_family,
             font_size=p.term_font_size,
@@ -240,6 +242,18 @@ class MainWindow(QMainWindow):
         self._status.flatpak = result
         self._flatpak_checked = True
         self._render()
+
+    def _apply_list_appearance(self, prefs) -> None:
+        self._tree.setFont(build_terminal_font(prefs.term_font_family, prefs.term_font_size))
+        base = QColor(prefs.term_bg)
+        pal = self._tree.palette()
+        pal.setColor(QPalette.Base, base)
+        pal.setColor(
+            QPalette.AlternateBase,
+            base.lighter(112) if base.lightness() < 128 else base.darker(106),
+        )
+        pal.setColor(QPalette.Text, QColor(prefs.term_fg))
+        self._tree.setPalette(pal)
 
     # -- updating -------------------------------------------------------- #
 
@@ -485,6 +499,7 @@ class MainWindow(QMainWindow):
             bg=p.term_bg,
             fg=p.term_fg,
         )
+        self._apply_list_appearance(p)
         self.setWindowIcon(window_icon(p.icon_style))
         self._render()
         self.settingsApplied.emit()

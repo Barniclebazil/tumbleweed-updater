@@ -120,4 +120,6 @@ as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog
   closes and pushes terminal appearance into `TerminalWidget.apply_appearance()`
-  (which reflows the pyte grid for the new font metrics).
+  (which reflows the pyte grid for the new font metrics) and into the update
+  list's font/palette via `MainWindow._apply_list_appearance()`, so the list
+  matches the terminal's configured font and colours.
