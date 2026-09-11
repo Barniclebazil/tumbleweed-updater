@@ -26,12 +26,10 @@ them in automatically.
 ## Install
 
 ```sh
-sudo zypper addrepo -f -G \
+sudo zypper addrepo -f \
   https://barniclebazil.github.io/tumbleweed-updater/tumbleweed-updater.repo
 sudo zypper install tumbleweed-updater
 ```
-
-`-G` skips the GPG check for an unsigned repo. Drop it once signing is set up.
 
 Once installed, the app starts automatically and its background-check timer
 is enabled. You'll find it in the system tray from then on.
@@ -42,9 +40,3 @@ is enabled. You'll find it in the system tray from then on.
 tumbleweed-updater          # open the window
 tumbleweed-updater --tray   # start hidden in the tray (used for autostart)
 ```
-
-## Updating the app itself
-
-The app updates your system, but it does not update itself automatically —
-new versions of the app arrive the same way it was installed, through
-`zypper dup`, once you've added the repository above.
