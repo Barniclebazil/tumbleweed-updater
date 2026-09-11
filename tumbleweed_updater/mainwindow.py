@@ -290,19 +290,6 @@ class MainWindow(QMainWindow):
                 lines.append("Options in effect:")
                 lines += [f"  • {n}" for n in notes]
 
-        lines.append("\nYou will be asked for the administrator password.")
-        if (
-            QMessageBox.question(
-                self,
-                "Start update",
-                "\n".join(lines),
-                QMessageBox.Yes | QMessageBox.Cancel,
-                QMessageBox.Yes,
-            )
-            != QMessageBox.Yes
-        ):
-            return
-
         steps = self._runner.build_queue(
             do_zypper=do_zypper,
             dup_args=dup_args_from_prefs(prefs),
@@ -311,6 +298,7 @@ class MainWindow(QMainWindow):
             do_flatpak_user=do_fp_user,
         )
         self._terminal_box.show()
+        self._terminal.append_notice("\n".join(lines))
         self._set_running(True)
         self.stateChanged.emit(TrayState.BUSY, "Installing updates…")
         self._runner.start(steps)

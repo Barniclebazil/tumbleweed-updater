@@ -53,7 +53,7 @@ ICON_STYLES = {
     "shield": "Shield",
     "package": "Package box",
 }
-DEFAULT_ICON_STYLE = "tumbleweed"
+DEFAULT_ICON_STYLE = "shield"
 
 
 @dataclass
