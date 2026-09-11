@@ -15,6 +15,25 @@ Features:
    that plugin is missing.
 5. Checks for updates in the background with a systemd timer. The cadence
    (hourly to weekly, or manual) is set from the app's settings.
+6. Lets you browse the Btrfs snapshots snapper has taken, see what changed
+   in a pre/post pair, roll back to one, or delete one (Menu → Snapshots…).
+
+## Screenshots
+
+1. The update list, showing pending `zypper dup` and Flatpak updates with
+   the version change and architecture for each package.
+
+   ![Update list](screenshots/update-list.png)
+
+2. Settings: check interval, update behaviour, tray icon style and terminal
+   appearance.
+
+   ![Settings](screenshots/settings.png)
+
+3. The embedded terminal running `zypper dup`, where you answer its prompts
+   directly.
+
+   ![Terminal](screenshots/terminal.png)
 
 ## Requirements
 

@@ -28,7 +28,9 @@ from .icons import window_icon
 from .runner import UpdateRunner
 from .settings import SettingsStore, dup_args_from_prefs
 from .settingsdialog import SettingsDialog
+from .snapshotsdialog import SnapshotsDialog
 from .sources import Action, UpdateStatus, human_bytes
+from .statusfile import read as read_status
 from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
 from .workers import FlatpakChecker
@@ -183,10 +185,13 @@ class MainWindow(QMainWindow):
 
         settings_act = QAction("Settings…", self)
         settings_act.triggered.connect(self.open_settings)
+        snapshots_act = QAction("Snapshots…", self)
+        snapshots_act.triggered.connect(self._open_snapshots)
         quit_act = QAction("Quit", self)
         quit_act.triggered.connect(QApplication.instance().quit)
         menu = self.menuBar().addMenu("&Menu")
         menu.addAction(settings_act)
+        menu.addAction(snapshots_act)
         menu.addSeparator()
         menu.addAction(quit_act)
 
@@ -234,9 +239,14 @@ class MainWindow(QMainWindow):
         else:
             self._hide_banner()
             self._statusbar("Update check complete.")
-        # The status file watcher re-renders; render now too in case it was a
-        # no-op write.
-        self._render()
+        # Re-read the status file directly rather than relying on the app's
+        # file-system watcher having already fired — don't let a missed or
+        # delayed watch event leave the window showing stale data.
+        status = read_status()
+        if status is not None:
+            self.apply_zypper_status(status)
+        else:
+            self._render()
 
     def _on_flatpak_result(self, result) -> None:
         self._status.flatpak = result
@@ -503,6 +513,12 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(window_icon(p.icon_style))
         self._render()
         self.settingsApplied.emit()
+
+    # -- snapshots --------------------------------------------------------- #
+
+    def _open_snapshots(self) -> None:
+        dlg = SnapshotsDialog(self._privileged, self)
+        dlg.exec()
 
     # -- window lifecycle ----------------------------------------------- #
 

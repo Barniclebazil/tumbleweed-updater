@@ -1,0 +1,113 @@
+#!/usr/bin/python3
+"""Privileged snapshot operations: list, compare, roll back, delete.
+
+Runs as root via pkexec. ``snapper list`` refuses to run as a normal user, so
+even read-only listing needs this helper - unlike ``check``, there is no
+passwordless case here (see data/org.opensuse.tumbleweedupdater.policy).
+
+Usage:
+    snapshots list
+    snapshots status <pre-number> <post-number>
+    snapshots rollback <number>
+    snapshots delete <number>
+
+``list`` and ``status`` print a JSON result to stdout. ``rollback`` and
+``delete`` print nothing on success; failure is the exit code plus a stderr
+message, the same convention as helper/set-interval. Every numeric argument
+is validated here before being handed to snapper - polkit passes them through
+untrusted.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tumbleweed_updater import snapshots  # noqa: E402
+
+_USAGE = "usage: snapshots <list|status <pre> <post>|rollback <n>|delete <n>>\n"
+
+
+def _int_arg(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _print_list() -> int:
+    result = snapshots.list_snapshots()
+    json.dump(
+        {
+            "error": result.error,
+            "snapshots": [
+                {
+                    "number": s.number,
+                    "type": s.type,
+                    "date": s.date,
+                    "description": s.description,
+                    "cleanup": s.cleanup,
+                    "pre_number": s.pre_number,
+                }
+                for s in result.snapshots
+            ],
+        },
+        sys.stdout,
+    )
+    return 0
+
+
+def _print_status(pre: int, post: int) -> int:
+    result = snapshots.status_between(pre, post)
+    json.dump(
+        {
+            "error": result.error,
+            "changes": [{"status": c.status, "path": c.path} for c in result.changes],
+        },
+        sys.stdout,
+    )
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        sys.stderr.write(_USAGE)
+        return 2
+
+    action = args[0]
+
+    if action == "list" and len(args) == 1:
+        return _print_list()
+
+    if action == "status" and len(args) == 3:
+        pre, post = _int_arg(args[1]), _int_arg(args[2])
+        if pre is None or post is None:
+            sys.stderr.write("status: snapshot numbers must be integers\n")
+            return 2
+        return _print_status(pre, post)
+
+    if action in ("rollback", "delete") and len(args) == 2:
+        number = _int_arg(args[1])
+        if number is None:
+            sys.stderr.write(f"{action}: snapshot number must be an integer\n")
+            return 2
+        error = (
+            snapshots.rollback_to(number)
+            if action == "rollback"
+            else snapshots.delete_snapshot(number)
+        )
+        if error:
+            sys.stderr.write(error + "\n")
+            return 1
+        return 0
+
+    sys.stderr.write(_USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

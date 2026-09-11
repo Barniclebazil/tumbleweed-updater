@@ -45,7 +45,7 @@ GUI (user)                          privileged helpers (root, via pkexec)
 tray.py   TrayIcon                  helper/check       zypper refresh + dry-run
 mainwindow.py  window + list        helper/run-update  interactive `zypper dup`
 terminal.py + pty_session.py        helper/set-interval systemd timer drop-in
-runner.py  command queue
+runner.py  command queue            helper/snapshots   list/rollback/delete via snapper
                     │  writes                    │
                     └── reads ── /run/tumbleweed-updater/status.json ──┘
 ```
@@ -76,6 +76,15 @@ runner.py  command queue
   first non-zero exit.
 * **`app.py`** owns the `QApplication`, single-instance `QLocalServer`, tray,
   window, and `PrivilegedRunner`. `MainWindow.stateChanged` → `TrayIcon`.
+* **`snapshots.py`** is pure/stdlib-only (no Qt), parsing `snapper --jsonout
+  list` (which nests snapshots under the config name, e.g. `{"root": [...]}`,
+  and uses hyphenated keys like `pre-number`) and `snapper status <n1>..<n2>`
+  (plain `"<code> <path>"` lines — `status` has no JSON mode). `helper/snapshots`
+  is the only way to reach it: even listing needs root, since `snapper list`
+  refuses to run as a normal user. `snapshotsdialog.py` (Menu → Snapshots…)
+  drives it on demand via `PrivilegedRunner.run_snapshots()`/`snapshotsFinished`
+  — there is no background polling or status-file entry for this, unlike
+  `check`.
 
 ### Privilege model (important)
 
@@ -85,15 +94,19 @@ runner.py  command queue
   `org.freedesktop.policykit.exec.path` annotation in
   `data/org.opensuse.tumbleweedupdater.policy`. `check` is passwordless for an
   active local session (`<allow_active>yes</allow_active>`, it changes nothing);
-  `run-update` and `set-interval` need admin auth (`auth_admin_keep`).
+  `run-update`, `set-interval` and `snapshots` need admin auth
+  (`auth_admin_keep`) — `snapshots` needs it even just to list, since
+  `snapper list` itself refuses to run as a normal user.
 * `pkexec` refuses to run a helper that is not **root-owned and not
   world-writable**. That means the `pkexec` paths only work after
   `make install`; from a bare checkout the UI runs but "Check now" / "Update
-  now" will fail. `paths.resolve_helper()` prefers the installed copy and falls
-  back to `helper/` for the UI-only case.
-* Btrfs snapshots are **not** managed here — `zypper dup` triggers
-  `snapper-zypp-plugin` itself. `helper/check` only reports whether that plugin
-  is installed; the window shows a warning banner if it is not.
+  now" / "Snapshots…" will fail. `paths.resolve_helper()` prefers the
+  installed copy and falls back to `helper/` for the UI-only case.
+* The pre/post Btrfs snapshots around `zypper dup` itself are **not** taken
+  here — `zypper dup` triggers `snapper-zypp-plugin` for those. `helper/check`
+  only reports whether that plugin is installed; the window shows a warning
+  banner if it is not. Browsing/rolling back/deleting the resulting snapshots
+  *is* handled here, via `helper/snapshots` (see `snapshots.py` above).
 
 ### Packaging
 
@@ -115,7 +128,8 @@ as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
 ## Conventions
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
-  `intervals.py`, `paths.py` must stay Qt-free (imported by the root helpers).
+  `intervals.py`, `paths.py`, `snapshots.py` must stay Qt-free (imported by
+  the root helpers).
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog

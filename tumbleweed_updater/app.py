@@ -119,8 +119,18 @@ class Application:
 
     def _install_watch(self) -> None:
         paths = self._watcher.files() + self._watcher.directories()
-        if STATUS_DIR not in paths and os.path.isdir(STATUS_DIR):
-            self._watcher.addPath(STATUS_DIR)
+        parent = os.path.dirname(STATUS_DIR)
+        if os.path.isdir(STATUS_DIR):
+            if STATUS_DIR not in paths:
+                self._watcher.addPath(STATUS_DIR)
+            if parent in self._watcher.directories():
+                # No longer needed now that the real directory exists.
+                self._watcher.removePath(parent)
+        elif parent not in paths and os.path.isdir(parent):
+            # STATUS_DIR (tmpfs) doesn't exist yet — e.g. we started before the
+            # first check ran since boot. Watch its parent so we notice when
+            # it's created and can switch to watching it directly.
+            self._watcher.addPath(parent)
         if STATUS_FILE not in self._watcher.files() and os.path.exists(STATUS_FILE):
             self._watcher.addPath(STATUS_FILE)
 

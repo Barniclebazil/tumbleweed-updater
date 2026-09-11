@@ -34,6 +34,21 @@
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 
+  <!-- Snapshot management: even listing needs root, since `snapper list`
+       refuses to run as a normal user; rollback/delete change what boots
+       next or free space, so admin auth is required throughout. -->
+  <action id="org.opensuse.tumbleweedupdater.snapshots">
+    <description>List and manage Btrfs snapshots</description>
+    <message>Authentication is required to list or manage Btrfs snapshots</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tumbleweed-updater/snapshots</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
   <!-- The actual upgrade. -->
   <action id="org.opensuse.tumbleweedupdater.update">
     <description>Install openSUSE Tumbleweed updates</description>

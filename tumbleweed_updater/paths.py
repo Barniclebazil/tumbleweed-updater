@@ -19,6 +19,7 @@ LIBEXEC_DIR = "/usr/libexec/tumbleweed-updater"
 HELPER_CHECK = os.path.join(LIBEXEC_DIR, "check")
 HELPER_SET_INTERVAL = os.path.join(LIBEXEC_DIR, "set-interval")
 HELPER_RUN_UPDATE = os.path.join(LIBEXEC_DIR, "run-update")
+HELPER_SNAPSHOTS = os.path.join(LIBEXEC_DIR, "snapshots")
 
 # When running straight from a source checkout (no RPM installed), the helpers
 # live next to the repo. resolve_helper() prefers the installed copy.
@@ -38,6 +39,7 @@ def resolve_helper(installed_path: str) -> str:
 ACTION_CHECK = "org.opensuse.tumbleweedupdater.check"
 ACTION_SET_INTERVAL = "org.opensuse.tumbleweedupdater.set-interval"
 ACTION_UPDATE = "org.opensuse.tumbleweedupdater.update"
+ACTION_SNAPSHOTS = "org.opensuse.tumbleweedupdater.snapshots"
 
 # systemd unit that runs HELPER_CHECK on a timer.
 CHECK_TIMER = "tumbleweed-updater-check.timer"
