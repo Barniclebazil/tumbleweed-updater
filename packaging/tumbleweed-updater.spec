@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.3.2
+Version:        0.4.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Fri Sep 11 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.4.0
+- Add a snapshot manager (Menu -> Snapshots...) to list, compare, roll back, and delete Btrfs snapshots, and fix the update window not always refreshing after a check completes.
+
 * Fri Sep 11 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.3.2
 - Update list now follows the terminal appearance settings, and the launcher icon is now a shield.
 
