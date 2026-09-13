@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.4.1
+Version:        0.5.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sun Sep 13 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.5.0
+- Add Menu -> About... (shows the installed version) and a Restart App notice when the app itself has been updated. Also fixed a test-isolation bug that could silently overwrite real user settings with test data.
+
 * Sun Sep 13 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.4.1
 - Retry the update check automatically when zypper's package lock is held (e.g. by PackageKit after resuming from sleep), instead of failing until the next scheduled check.
 
