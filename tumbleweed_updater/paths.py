@@ -6,6 +6,7 @@ Kept in one place so the RPM packaging and the code agree on paths.
 from __future__ import annotations
 
 import os
+import re
 
 # Directory the periodic checker writes its result into. A tmpfs path (/run) is
 # used deliberately: the data is disposable and should not survive a reboot.
@@ -33,6 +34,27 @@ def resolve_helper(installed_path: str) -> str:
         return installed_path
     local = os.path.join(_REPO_HELPERS, os.path.basename(installed_path))
     return local if os.path.exists(local) else installed_path
+
+
+_VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def installed_version() -> str | None:
+    """Read ``__version__`` straight off the on-disk ``__init__.py``.
+
+    Bypasses the already-imported ``tumbleweed_updater`` module (whose
+    ``__version__`` stays whatever it was at process start) so a long-running
+    GUI can notice its own package files were replaced by a newer version
+    underneath it, e.g. by a ``zypper dup`` that upgraded this package too.
+    """
+    init_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__init__.py")
+    try:
+        with open(init_file, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    match = _VERSION_RE.search(text)
+    return match.group(1) if match else None
 
 
 # polkit action IDs (see data/org.opensuse.tumbleweedupdater.policy).

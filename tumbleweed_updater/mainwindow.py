@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME
+from . import APP_NAME, __version__
 from .icons import window_icon
 from .runner import UpdateRunner
 from .settings import SettingsStore, dup_args_from_prefs
@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
     stateChanged = Signal(object, str)  # TrayState, tooltip
     checkRequested = Signal()
     settingsApplied = Signal()  # emitted after the settings dialog is accepted
+    restartRequested = Signal()  # "Restart App" clicked on the update notice
 
     def __init__(self, settings: SettingsStore, privileged) -> None:
         super().__init__()
@@ -108,6 +109,22 @@ class MainWindow(QMainWindow):
         self._subline.setStyleSheet("color: palette(mid);")
         outer.addWidget(self._headline)
         outer.addWidget(self._subline)
+
+        self._update_notice = QWidget()
+        self._update_notice.setAttribute(Qt.WA_StyledBackground, True)
+        self._update_notice.setStyleSheet(
+            "background: #2a7fff; color: white; border-radius: 4px;"
+        )
+        notice_l = QHBoxLayout(self._update_notice)
+        notice_l.setContentsMargins(8, 6, 8, 6)
+        self._update_label = QLabel()
+        self._update_label.setWordWrap(True)
+        notice_l.addWidget(self._update_label, 1)
+        restart_btn = QPushButton("Restart App")
+        restart_btn.clicked.connect(self.restartRequested.emit)
+        notice_l.addWidget(restart_btn)
+        self._update_notice.hide()
+        outer.addWidget(self._update_notice)
 
         self._banner = QLabel()
         self._banner.setWordWrap(True)
@@ -187,11 +204,15 @@ class MainWindow(QMainWindow):
         settings_act.triggered.connect(self.open_settings)
         snapshots_act = QAction("Snapshots…", self)
         snapshots_act.triggered.connect(self._open_snapshots)
+        about_act = QAction("About…", self)
+        about_act.triggered.connect(self._open_about)
         quit_act = QAction("Quit", self)
         quit_act.triggered.connect(QApplication.instance().quit)
         menu = self.menuBar().addMenu("&Menu")
         menu.addAction(settings_act)
         menu.addAction(snapshots_act)
+        menu.addSeparator()
+        menu.addAction(about_act)
         menu.addSeparator()
         menu.addAction(quit_act)
 
@@ -205,6 +226,14 @@ class MainWindow(QMainWindow):
         self._status.generated = status.generated
         self._status.snapshots_ok = status.snapshots_ok
         self._render()
+
+    def show_update_available(self, new_version: str) -> None:
+        """Called once the running app is older than its own installed files."""
+        self._update_label.setText(
+            f"Tumbleweed Updater has been updated to version {new_version}. "
+            "Restart the app to use it."
+        )
+        self._update_notice.show()
 
     def trigger_check(self) -> None:
         self._on_check_clicked()
@@ -519,6 +548,18 @@ class MainWindow(QMainWindow):
     def _open_snapshots(self) -> None:
         dlg = SnapshotsDialog(self._privileged, self)
         dlg.exec()
+
+    # -- about ------------------------------------------------------------ #
+
+    def _open_about(self) -> None:
+        QMessageBox.about(
+            self,
+            f"About {APP_NAME}",
+            f"<b>{APP_NAME}</b><br>Version {__version__}"
+            "<br><br>A tray-based update manager for openSUSE Tumbleweed on KDE."
+            '<br><br><a href="https://github.com/Barniclebazil/tumbleweed-updater">'
+            "github.com/Barniclebazil/tumbleweed-updater</a>",
+        )
 
     # -- window lifecycle ----------------------------------------------- #
 

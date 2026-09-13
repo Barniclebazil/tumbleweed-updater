@@ -9,10 +9,10 @@ from PySide6.QtCore import QFileSystemWatcher, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
-from . import APP_ID, APP_NAME
+from . import APP_ID, APP_NAME, __version__
 from .icons import window_icon
 from .mainwindow import MainWindow
-from .paths import STATUS_DIR, STATUS_FILE
+from .paths import STATUS_DIR, STATUS_FILE, installed_version
 from .privileged import PrivilegedRunner
 from .settings import SettingsStore
 from .statusfile import read as read_status
@@ -34,6 +34,21 @@ def _existing_instance_takeover(action: str) -> bool:
     # Stale socket file from a crashed instance.
     QLocalServer.removeServer(_SOCKET_NAME)
     return False
+
+
+def _relaunch_argv() -> list[str]:
+    """Rebuild the command line to re-exec this same process.
+
+    ``python3 -m tumbleweed_updater`` (the checkout/``make run`` case) sets
+    ``sys.argv[0]`` to ``.../tumbleweed_updater/__main__.py``; re-executing
+    that path directly would drop the package context its relative import
+    needs, so re-add ``-m tumbleweed_updater`` instead. The installed launcher
+    (``/usr/bin/tumbleweed-updater``) uses an absolute import and can just be
+    re-run by path.
+    """
+    if sys.argv and os.path.basename(sys.argv[0]) == "__main__.py":
+        return [sys.executable, "-m", "tumbleweed_updater", *sys.argv[1:]]
+    return [sys.executable, *sys.argv]
 
 
 class Application:
@@ -64,6 +79,7 @@ class Application:
         self.window = MainWindow(self.settings, self.privileged)
         self.window.stateChanged.connect(self._on_state)
         self.window.settingsApplied.connect(self._on_settings_applied)
+        self.window.restartRequested.connect(self.restart)
 
         self.tray = TrayIcon(self.settings, self.qt)
         self.tray.act_open.triggered.connect(self.window.show_and_raise)
@@ -77,6 +93,7 @@ class Application:
             self.tray.show()
 
         self._last_total = -1
+        self._update_notified = False
         self._watcher = QFileSystemWatcher(self.qt)
         self._install_watch()
         self._watcher.fileChanged.connect(self._on_status_touched)
@@ -155,6 +172,15 @@ class Application:
                 8000,
             )
         self._last_total = total
+        self._check_for_update()
+
+    def _check_for_update(self) -> None:
+        if self._update_notified:
+            return
+        new_version = installed_version()
+        if new_version and new_version != __version__:
+            self._update_notified = True
+            self.window.show_update_available(new_version)
 
     # -- tray state ---------------------------------------------------------- #
 
@@ -178,6 +204,14 @@ class Application:
             ):
                 return
         self.qt.quit()
+
+    def restart(self) -> None:
+        # Release the single-instance socket before re-executing in place, so
+        # the fresh process doesn't mistake the (about to vanish) old one for
+        # a still-running instance and hand off to it instead of starting.
+        self._server.close()
+        QLocalServer.removeServer(_SOCKET_NAME)
+        os.execv(sys.executable, _relaunch_argv())
 
     def run(self) -> int:
         return self.qt.exec()
