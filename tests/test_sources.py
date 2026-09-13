@@ -1,7 +1,12 @@
 """Parser tests. The XML fixtures mirror /usr/share/zypper/xml/xmlout.rnc."""
 
+import subprocess
+
+from tumbleweed_updater import sources
 from tumbleweed_updater.sources import (
     Action,
+    ZYPPER_EXIT_ZYPP_LOCKED,
+    check_zypper,
     human_bytes,
     parse_flatpak_updates,
     parse_zypper_dup_xml,
@@ -41,6 +46,13 @@ NOTHING_XML = """<?xml version='1.0'?>
 ERROR_XML = """<?xml version='1.0'?>
 <stream>
 <message type="error">Repository 'foo' is invalid.</message>
+</stream>
+"""
+
+LOCK_XML = """<?xml version='1.0'?>
+<stream>
+<message type="error">System management is locked by the application with pid 5899 (/usr/libexec/packagekitd).
+Close this application before trying again.</message>
 </stream>
 """
 
@@ -92,6 +104,30 @@ def test_human_bytes():
     assert human_bytes(2048) == "2.0 KiB"
     assert human_bytes(-2048) == "-2.0 KiB"
     assert human_bytes(123456789).endswith("MiB")
+
+
+def test_check_zypper_sets_locked_on_exit_code_7(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, returncode=ZYPPER_EXIT_ZYPP_LOCKED, stdout=LOCK_XML, stderr=""
+        )
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    res = check_zypper()
+    assert res.locked is True
+    assert res.error and "locked" in res.error.lower()
+
+
+def test_check_zypper_other_error_not_flagged_locked(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, returncode=6, stdout=ERROR_XML, stderr="Repository 'foo' is invalid."
+        )
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    res = check_zypper()
+    assert res.locked is False
+    assert res.error and "invalid" in res.error
 
 
 def test_flatpak_parser():

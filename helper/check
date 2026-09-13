@@ -17,12 +17,20 @@ import datetime
 import os
 import subprocess
 import sys
+import time
 
 # Allow running straight from a source checkout (helper/ next to the package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tumbleweed_updater import sources, statusfile  # noqa: E402
 from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
+
+# A resume-from-sleep race with PackageKit (triggered by NetworkManager
+# reconnecting) is the common case, and zypper fails fast when the lock is
+# held rather than waiting, so a handful of short retries costs little even
+# in the worst case.
+_LOCK_MAX_ATTEMPTS = 3  # 1 initial attempt + up to 2 retries
+_LOCK_RETRY_DELAY_S = 10
 
 
 def _snapshots_ok() -> bool:
@@ -35,7 +43,13 @@ def _snapshots_ok() -> bool:
     return rpm.returncode == 0
 
 
-def _refresh() -> str | None:
+def _refresh() -> tuple[str | None, bool]:
+    """Run ``zypper refresh``.
+
+    Returns ``(error_message, locked)``; ``locked`` is True only when the
+    failure was specifically a zypp lock conflict (exit code 7) - the one
+    case worth retrying automatically.
+    """
     try:
         proc = subprocess.run(
             ["zypper", "--non-interactive", "refresh"],
@@ -44,21 +58,42 @@ def _refresh() -> str | None:
             timeout=600,
         )
     except FileNotFoundError:
-        return "zypper is not installed"
+        return "zypper is not installed", False
     except subprocess.TimeoutExpired:
-        return "repository refresh timed out"
+        return "repository refresh timed out", False
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout).strip().splitlines()
-        return tail[-1] if tail else f"zypper refresh exited {proc.returncode}"
-    return None
+        message = (proc.stderr or proc.stdout).strip()
+        if not message:
+            message = f"zypper refresh exited {proc.returncode}"
+        return message, proc.returncode == sources.ZYPPER_EXIT_ZYPP_LOCKED
+    return None, False
 
 
 def main() -> int:
-    refresh_error = _refresh()
+    attempts = 0
+    refresh_error: str | None = None
+    zypper = sources.ZypperResult()
+    still_locked = False
 
-    zypper = sources.check_zypper()
+    while True:
+        attempts += 1
+        refresh_error, refresh_locked = _refresh()
+        zypper = sources.check_zypper()
+
+        still_locked = zypper.error is not None and (zypper.locked or refresh_locked)
+        if not still_locked or attempts >= _LOCK_MAX_ATTEMPTS:
+            break
+        time.sleep(_LOCK_RETRY_DELAY_S)
+
     if zypper.error is None and refresh_error and not zypper.packages:
         zypper.error = f"repository refresh failed: {refresh_error}"
+
+    if still_locked and attempts > 1:
+        elapsed = (attempts - 1) * _LOCK_RETRY_DELAY_S
+        zypper.error = (
+            f"System management is still locked after {attempts} automatic "
+            f"attempts over the last {elapsed}s: {zypper.error}"
+        )
 
     status = UpdateStatus(
         zypper=zypper,

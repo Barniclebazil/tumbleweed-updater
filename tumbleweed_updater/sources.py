@@ -83,6 +83,7 @@ class ZypperResult:
     need_reboot: bool = False
     need_restart: bool = False
     error: str | None = None
+    locked: bool = False
 
     @property
     def count(self) -> int:
@@ -202,6 +203,13 @@ def parse_zypper_dup_xml(xml_text: str) -> ZypperResult:
     return result
 
 
+# zypper's documented exit code for "another process holds the zypp lock"
+# (e.g. PackageKit refreshing after NetworkManager reconnects post-resume).
+# Locale-independent — used only to decide whether to retry, never for
+# matching the (possibly translated) message text.
+ZYPPER_EXIT_ZYPP_LOCKED = 7
+
+
 def check_zypper(timeout: int = 120) -> ZypperResult:
     """Run a dry-run dup against already-refreshed metadata."""
     try:
@@ -225,9 +233,10 @@ def check_zypper(timeout: int = 120) -> ZypperResult:
         return ZypperResult(error="zypper timed out")
 
     res = parse_zypper_dup_xml(proc.stdout)
-    # Exit codes: 0 ok, 100/101 updates available (for `lu`), 106 repo issue...
-    # For `dup --dry-run` a non-zero code with no parsed packages is a real
-    # failure worth showing.
+    res.locked = proc.returncode == ZYPPER_EXIT_ZYPP_LOCKED
+    # Exit codes: 0 ok, 100/101 updates available (for `lu`), 7 zypp locked
+    # (see ZYPPER_EXIT_ZYPP_LOCKED), 106 repo issue... For `dup --dry-run` a
+    # non-zero code with no parsed packages is a real failure worth showing.
     if res.error is None and proc.returncode not in (0, 100, 101) and not res.packages:
         stderr = proc.stderr.strip().splitlines()
         res.error = stderr[-1] if stderr else f"zypper exited {proc.returncode}"
