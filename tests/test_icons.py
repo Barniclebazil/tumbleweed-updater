@@ -33,7 +33,12 @@ def test_unknown_style_falls_back(app):
 
 
 def test_tray_reload_picks_up_new_style(app, tmp_path, monkeypatch):
+    # Qt resolves the config path via $XDG_CONFIG_HOME first, falling back to
+    # $HOME/.config only if that's unset - on a normal desktop session it's
+    # set independently of HOME, so both must be patched to actually isolate
+    # QSettings from the real ~/.config file.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
 
     from tumbleweed_updater.settings import SettingsStore
 
