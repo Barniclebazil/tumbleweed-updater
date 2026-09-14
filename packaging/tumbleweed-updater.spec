@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.5.0
+Version:        0.6.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Mon Sep 14 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.6.0
+- Security and reliability release: the single-instance socket moves out of /tmp, the status directory no longer inherits the caller's umask, the update helper validates its zypper options against an allow-list, snapshot rollback and delete move behind a polkit action that always prompts, Cancel can now stop a running upgrade, and Menu -> Quit no longer aborts an update without asking.
+
 * Sun Sep 13 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.5.0
 - Add Menu -> About... (shows the installed version) and a Restart App notice when the app itself has been updated. Also fixed a test-isolation bug that could silently overwrite real user settings with test data.
 
