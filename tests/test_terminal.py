@@ -3,7 +3,9 @@
 Run headless via the offscreen Qt platform plugin.
 """
 
+import contextlib
 import os
+import signal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -170,7 +172,10 @@ def test_reaping_a_lingering_child_does_not_block_the_event_loop(app):
     heartbeat.start()
     finished = _pump_until(lambda: done != [], timeout_ms=9000)
     heartbeat.stop()
-    sess.kill()
+    # kill() is a no-op once the session has given up on the child, so reach
+    # for the pid directly rather than leaving a sleep behind.
+    with contextlib.suppress(OSError):
+        os.kill(sess._pid, signal.SIGKILL)
 
     assert finished, "the reaper never gave up"
     assert done[0] < 0, "a child that never exited is not a clean exit"
