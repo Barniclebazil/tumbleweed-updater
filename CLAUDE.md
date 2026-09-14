@@ -45,7 +45,9 @@ GUI (user)                          privileged helpers (root, via pkexec)
 tray.py   TrayIcon                  helper/check       zypper refresh + dry-run
 mainwindow.py  window + list        helper/run-update  interactive `zypper dup`
 terminal.py + pty_session.py        helper/set-interval systemd timer drop-in
-runner.py  command queue            helper/snapshots   list/rollback/delete via snapper
+runner.py  command queue            helper/snapshots   list/compare via snapper
+                    │                           helper/snapshots-manage
+                    │                              rollback/delete via snapper
                     │  writes                    │
                     └── reads ── /run/tumbleweed-updater/status.json ──┘
 ```
@@ -58,7 +60,10 @@ runner.py  command queue            helper/snapshots   list/rollback/delete via 
   `/usr/share/zypper/xml/xmlout.rnc`; the solvable element uses `kind=` (not
   `type=`) and `edition`/`edition-old`.
 * **`intervals.py`** is likewise Qt-free — the label→`OnCalendar=` map shared by
-  `settings.py` and `helper/set-interval`.
+  `settings.py` and `helper/set-interval`. **`dupargs.py`** is the same idea for
+  the other direction: the allow-list of `zypper dup` options that
+  `helper/run-update` will accept, shared with `settingsdialog.py` so the dialog
+  can reject an option before it is saved rather than at update time.
 * **`icons.py`** renders each tray/window icon from one monochrome SVG in
   `data/icons/styles/<name>.svg` (`currentColor` stroke): idle → palette text
   colour, "updates" → openSUSE orange. Style list is `settings.ICON_STYLES`.
@@ -66,9 +71,13 @@ runner.py  command queue            helper/snapshots   list/rollback/delete via 
 * **Update options** — `settings.dup_args_from_prefs()` turns the "Update
   behaviour" toggles into `zypper dup` args (`-y --auto-agree-with-licenses`,
   `--allow-vendor-change`, `--download in-advance`) plus the free-text field,
-  de-duplicated. `helper/run-update [--cleanup] <args…>` forwards them, runs
-  `zypper clean` after on `--cleanup`, and maps zypper exit **102/103**
+  de-duplicated. `helper/run-update [--cleanup] <args…>` checks every option
+  against `dupargs.py` first (polkit matches only the helper's path, never its
+  arguments, and the update action's authorisation stays cached for minutes),
+  runs `zypper clean` after on `--cleanup`, and maps zypper exit **102/103**
   (reboot/restart needed) to success. `runner.py` also treats 0/102/103 as OK.
+  `MainWindow._on_update_clicked()` prints the exact argv into the terminal
+  before starting, since the free-text options field lives in the user's config.
 * **`terminal.py`** is a real terminal: `pty_session.py` runs the child on a PTY
   wired to a `QSocketNotifier`; `_Screen` subclasses `pyte.Screen` to keep a
   scrollback deque. `runner.py` drives a queue of steps (zypper dup → flatpak
@@ -79,12 +88,15 @@ runner.py  command queue            helper/snapshots   list/rollback/delete via 
 * **`snapshots.py`** is pure/stdlib-only (no Qt), parsing `snapper --jsonout
   list` (which nests snapshots under the config name, e.g. `{"root": [...]}`,
   and uses hyphenated keys like `pre-number`) and `snapper status <n1>..<n2>`
-  (plain `"<code> <path>"` lines — `status` has no JSON mode). `helper/snapshots`
-  is the only way to reach it: even listing needs root, since `snapper list`
-  refuses to run as a normal user. `snapshotsdialog.py` (Menu → Snapshots…)
-  drives it on demand via `PrivilegedRunner.run_snapshots()`/`snapshotsFinished`
-  — there is no background polling or status-file entry for this, unlike
-  `check`.
+  (plain `"<code> <path>"` lines — `status` has no JSON mode). The helpers are
+  the only way to reach it: even listing needs root, since `snapper list`
+  refuses to run as a normal user. Reading (`helper/snapshots`: list, status)
+  and changing (`helper/snapshots-manage`: rollback, delete) are deliberately
+  **two helpers under two polkit actions** — see the privilege model below.
+  `snapshotsdialog.py` (Menu → Snapshots…) drives both on demand via
+  `PrivilegedRunner.run_snapshots()`/`snapshotsFinished`, which routes to the
+  right helper by the action word — there is no background polling or
+  status-file entry for this, unlike `check`.
 
 ### Privilege model (important)
 
@@ -96,7 +108,13 @@ runner.py  command queue            helper/snapshots   list/rollback/delete via 
   active local session (`<allow_active>yes</allow_active>`, it changes nothing);
   `run-update`, `set-interval` and `snapshots` need admin auth
   (`auth_admin_keep`) — `snapshots` needs it even just to list, since
-  `snapper list` itself refuses to run as a normal user.
+  `snapper list` itself refuses to run as a normal user. `snapshots-manage`
+  (rollback/delete) is plain `auth_admin` on purpose: `_keep` caches the
+  authorisation for minutes, and the cached listing must not be reusable to
+  destroy a snapshot. For the same reason the helpers validate their own
+  arguments (`set-interval` against `intervals.py`, `run-update` against
+  `dupargs.py`, both snapshot helpers against `int()`): the
+  `exec.path` annotation pins the program, never its argv.
 * `pkexec` refuses to run a helper that is not **root-owned and not
   world-writable**. That means the `pkexec` paths only work after
   `make install`; from a bare checkout the UI runs but "Check now" / "Update
@@ -128,8 +146,8 @@ as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
 ## Conventions
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
-  `intervals.py`, `paths.py`, `snapshots.py` must stay Qt-free (imported by
-  the root helpers).
+  `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py` must stay Qt-free
+  (imported by the root helpers).
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog

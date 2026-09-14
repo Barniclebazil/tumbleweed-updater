@@ -19,8 +19,15 @@ import subprocess
 import sys
 import time
 
-# Allow running straight from a source checkout (helper/ next to the package).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Running from a source checkout (helper/ sitting next to the package) needs the
+# repository root on sys.path; an installed copy does not. Guard on the package
+# directory actually being there, because installed this file lives in
+# /usr/libexec/tumbleweed-updater and putting /usr/libexec at the front of
+# sys.path would let any stray .py file there shadow the standard library in a
+# process running as root.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
+    sys.path.insert(0, _REPO)
 
 from tumbleweed_updater import sources, statusfile  # noqa: E402
 from tumbleweed_updater.sources import UpdateStatus  # noqa: E402

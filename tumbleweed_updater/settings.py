@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QSettings
 
 from . import APP_ID
+from .dupargs import VALUED
 from .intervals import DEFAULT_INTERVAL, INTERVALS, oncalendar_for
 
 __all__ = [
@@ -60,7 +61,6 @@ DEFAULT_ICON_STYLE = "shield"
 class Prefs:
     check_interval: str = DEFAULT_INTERVAL
     check_on_launch: bool = True
-    start_in_tray: bool = True
     notify_on_updates: bool = True
     # Extra arguments appended to ``zypper dup`` (advanced; empty by default).
     zypper_dup_args: str = ""
@@ -93,7 +93,6 @@ class SettingsStore:
         return Prefs(
             check_interval=interval,
             check_on_launch=_as_bool(s.value("check/onLaunch", d.check_on_launch)),
-            start_in_tray=_as_bool(s.value("ui/startInTray", d.start_in_tray)),
             notify_on_updates=_as_bool(s.value("ui/notify", d.notify_on_updates)),
             zypper_dup_args=s.value("zypper/dupArgs", d.zypper_dup_args, str),
             include_flatpak=_as_bool(s.value("flatpak/include", d.include_flatpak)),
@@ -129,7 +128,6 @@ class SettingsStore:
         s = self._s
         s.setValue("check/interval", p.check_interval)
         s.setValue("check/onLaunch", p.check_on_launch)
-        s.setValue("ui/startInTray", p.start_in_tray)
         s.setValue("ui/notify", p.notify_on_updates)
         s.setValue("zypper/dupArgs", p.zypper_dup_args)
         s.setValue("flatpak/include", p.include_flatpak)
@@ -165,7 +163,13 @@ def _one_of(value: object, choices, default: str) -> str:
 
 
 def dup_args_from_prefs(p: Prefs) -> list[str]:
-    """Turn the update-behaviour toggles + free-text field into ``zypper dup`` args."""
+    """Turn the update-behaviour toggles + free-text field into ``zypper dup`` args.
+
+    Tokens already produced by the toggles are dropped from the free-text field
+    so the two cannot contradict each other, but only whole options: a value
+    following an option (``--download in-advance``) is always kept, or dropping
+    a duplicate ``in-advance`` would leave a bare ``--download`` behind.
+    """
     args: list[str] = []
     if p.dup_non_interactive:
         args += ["-y", "--auto-agree-with-licenses"]
@@ -173,7 +177,15 @@ def dup_args_from_prefs(p: Prefs) -> list[str]:
         args.append("--allow-vendor-change")
     if p.dup_download_in_advance:
         args += ["--download", "in-advance"]
+
+    skip_value = False
     for token in p.zypper_dup_args.split():
-        if token not in args:
-            args.append(token)
+        if skip_value:
+            skip_value = False
+            continue
+        if token in args:
+            # Drop this option, and its value too if it takes one.
+            skip_value = token in VALUED
+            continue
+        args.append(token)
     return args

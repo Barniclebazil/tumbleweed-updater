@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 from PySide6.QtCore import QFileSystemWatcher, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -18,7 +19,25 @@ from .settings import SettingsStore
 from .statusfile import read as read_status
 from .tray import TrayIcon, TrayState
 
-_SOCKET_NAME = "tumbleweed-updater.instance"
+
+def _socket_path() -> str:
+    """Absolute path for the single-instance socket.
+
+    A bare server name makes Qt create /tmp/<name>, mode 0755: any other local
+    user could connect to it (and so make this app raise a polkit password
+    prompt on our desktop), or create the path first so that this app mistakes
+    it for a running instance and exits. XDG_RUNTIME_DIR is per-user and 0700,
+    so the socket is reachable only by us.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if not os.path.isdir(runtime):
+        # No logind session. Fall back to the temp directory, where the
+        # UserAccessOption set on the server is the only protection left.
+        runtime = tempfile.gettempdir()
+    return os.path.join(runtime, "tumbleweed-updater.instance")
+
+
+_SOCKET_NAME = _socket_path()
 
 
 def _existing_instance_takeover(action: str) -> bool:
@@ -72,7 +91,16 @@ class Application:
 
         self._server = QLocalServer(self.qt)
         self._server.newConnection.connect(self._on_ipc)
-        self._server.listen(_SOCKET_NAME)
+        # 0600 on the socket itself, so that it is ours alone even in the
+        # temp-directory fallback _socket_path() describes.
+        self._server.setSocketOptions(QLocalServer.UserAccessOption)
+        if not self._server.listen(_SOCKET_NAME):
+            # Not fatal - the app works, it just cannot be re-focused by a
+            # second launch - but it means something else holds the path.
+            sys.stderr.write(
+                f"tumbleweed-updater: could not listen on {_SOCKET_NAME}: "
+                f"{self._server.errorString()}\n"
+            )
 
         self.privileged = PrivilegedRunner(self.qt)
 
@@ -80,6 +108,7 @@ class Application:
         self.window.stateChanged.connect(self._on_state)
         self.window.settingsApplied.connect(self._on_settings_applied)
         self.window.restartRequested.connect(self.restart)
+        self.window.quitRequested.connect(self._quit)
 
         self.tray = TrayIcon(self.settings, self.qt)
         self.tray.act_open.triggered.connect(self.window.show_and_raise)
@@ -190,22 +219,32 @@ class Application:
     def _on_settings_applied(self) -> None:
         self.tray.reload()
 
+    def _confirm_abort(self, question: str) -> bool:
+        return (
+            QMessageBox.question(
+                self.window,
+                "Update in progress",
+                question,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        )
+
     def _quit(self) -> None:
-        if self.window.runner_active:
-            if (
-                QMessageBox.question(
-                    self.window,
-                    "Update in progress",
-                    "An update is still running. Quit anyway and abort it?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                != QMessageBox.Yes
-            ):
-                return
+        if self.window.runner_active and not self._confirm_abort(
+            "An update is still running. Quit anyway and abort it?"
+        ):
+            return
         self.qt.quit()
 
     def restart(self) -> None:
+        # Re-executing tears down the terminal's PTY, which SIGHUPs whatever is
+        # attached to it - including a zypper transaction in flight.
+        if self.window.runner_active and not self._confirm_abort(
+            "An update is still running. Restart anyway and abort it?"
+        ):
+            return
         # Release the single-instance socket before re-executing in place, so
         # the fresh process doesn't mistake the (about to vanish) old one for
         # a still-running instance and hand off to it instead of starting.

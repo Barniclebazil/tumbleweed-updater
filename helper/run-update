@@ -1,46 +1,88 @@
-#!/bin/sh
-# Interactive openSUSE Tumbleweed system upgrade.
-#
-# Invoked as root through pkexec by Tumbleweed Updater, attached to the GUI's
-# embedded terminal so the user answers zypper's prompts directly.
-#
-# Usage: run-update [--cleanup] [extra zypper dup args...]
-#   --cleanup   run "zypper clean" after a successful upgrade
-#
-# Btrfs snapshots are handled by zypper itself (snapper-zypp-plugin); this
-# script does not touch snapshots.
+#!/usr/bin/python3
+"""Interactive openSUSE Tumbleweed system upgrade.
 
-set -eu
+Invoked as root through pkexec by Tumbleweed Updater, attached to the GUI's
+embedded terminal so the user answers zypper's prompts directly. The child
+processes inherit this process's terminal, which is what keeps zypper
+interactive and coloured.
 
-CLEANUP=0
-if [ "${1:-}" = "--cleanup" ]; then
-    CLEANUP=1
-    shift
-fi
+Usage: run-update [--cleanup] [zypper dup options...]
+    --cleanup   run "zypper clean" after a successful upgrade
 
-export TERM="${TERM:-xterm-256color}"
-export LANG="${LANG:-C.UTF-8}"
-export PAGER=cat
-export SYSTEMD_PAGER=cat
+Every option is checked against tumbleweed_updater.dupargs before zypper sees
+it: polkit matches only the path of this script, and the update action keeps
+its authorisation cached for a few minutes, so the arguments arrive untrusted
+even when the last person to use the app was the legitimate user.
 
-printf '\033[1m==> Refreshing repositories\033[0m\n'
-zypper refresh
+Btrfs snapshots are handled by zypper itself (snapper-zypp-plugin); this
+script does not touch snapshots.
+"""
 
-printf '\033[1m==> zypper dup %s\033[0m\n' "$*"
-set +e
-zypper dup "$@"
-rc=$?
-set -e
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+# Add the repository root when running from a checkout; see helper/check for why
+# this is guarded.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
+    sys.path.insert(0, _REPO)
+
+from tumbleweed_updater.dupargs import unknown_args  # noqa: E402
 
 # 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
-case "$rc" in
-    0 | 102 | 103) ;;
-    *) exit "$rc" ;;
-esac
+_OK_EXITS = (0, 102, 103)
 
-if [ "$CLEANUP" = 1 ]; then
-    printf '\033[1m==> Freeing up disk space (zypper clean)\033[0m\n'
-    zypper clean || true
-fi
 
-exit 0
+def _heading(text: str) -> None:
+    sys.stdout.write(f"\033[1m==> {text}\033[0m\n")
+    sys.stdout.flush()
+
+
+def _run(argv: list[str]) -> int:
+    # Inherit stdin/stdout/stderr: they are the terminal the GUI is showing.
+    return subprocess.call(argv)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    cleanup = False
+    if args and args[0] == "--cleanup":
+        cleanup = True
+        args = args[1:]
+
+    rejected = unknown_args(args)
+    if rejected:
+        sys.stderr.write(
+            "run-update: refusing unrecognised zypper dup option(s): "
+            + " ".join(rejected)
+            + "\n"
+        )
+        return 2
+
+    os.environ.setdefault("TERM", "xterm-256color")
+    os.environ.setdefault("LANG", "C.UTF-8")
+    os.environ["PAGER"] = "cat"
+    os.environ["SYSTEMD_PAGER"] = "cat"
+
+    _heading("Refreshing repositories")
+    rc = _run(["zypper", "refresh"])
+    if rc != 0:
+        return rc
+
+    _heading("zypper dup " + " ".join(args))
+    rc = _run(["zypper", "dup", *args])
+    if rc not in _OK_EXITS:
+        return rc
+
+    if cleanup:
+        _heading("Freeing up disk space (zypper clean)")
+        _run(["zypper", "clean"])
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

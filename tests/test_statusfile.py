@@ -58,3 +58,38 @@ def test_write_is_atomic_and_world_readable(tmp_path):
     statusfile.write(_sample(), path)
     mode = os.stat(path).st_mode & 0o777
     assert mode == 0o644
+
+
+def test_read_survives_a_wrongly_shaped_file(tmp_path):
+    """Anything unusable must read as None, not raise.
+
+    read() is called from a QFileSystemWatcher slot, where an escaping
+    exception aborts the process. These two shapes raise AttributeError and
+    TypeError, neither of which is a ValueError.
+    """
+    for bad in (
+        '{"zypper": {"packages": {"a": 1}}}',
+        '{"zypper": {"download_size": [1]}}',
+        '{"zypper": "not a mapping"}',
+        "[]",
+        "not json at all",
+    ):
+        path = tmp_path / "status.json"
+        path.write_text(bad, encoding="utf-8")
+        assert statusfile.read(str(path)) is None, bad
+
+
+def test_write_fixes_the_directory_mode_regardless_of_umask(tmp_path):
+    """pkexec does not reset the umask, so the checker must not inherit it.
+
+    0700 would leave the GUI unable to read its own status file; 0777 would
+    leave a world-writable directory in /run.
+    """
+    old = os.umask(0o077)
+    try:
+        target = tmp_path / "run" / "status.json"
+        statusfile.write(UpdateStatus(), str(target))
+        assert oct(os.stat(target.parent).st_mode & 0o777) == "0o755"
+        assert oct(os.stat(target).st_mode & 0o777) == "0o644"
+    finally:
+        os.umask(old)

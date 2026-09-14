@@ -53,6 +53,7 @@ install -m755 helper/check        "$(d "$LIBEXECDIR")/check"
 install -m755 helper/set-interval "$(d "$LIBEXECDIR")/set-interval"
 install -m755 helper/run-update   "$(d "$LIBEXECDIR")/run-update"
 install -m755 helper/snapshots    "$(d "$LIBEXECDIR")/snapshots"
+install -m755 helper/snapshots-manage "$(d "$LIBEXECDIR")/snapshots-manage"
 
 install -d "$(d "$POLKITDIR")"
 install -m644 data/org.opensuse.tumbleweedupdater.policy "$(d "$POLKITDIR")/"

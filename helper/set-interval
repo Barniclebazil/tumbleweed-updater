@@ -14,7 +14,11 @@ import os
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the repository root when running from a checkout; see helper/check for why
+# this is guarded.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
+    sys.path.insert(0, _REPO)
 
 from tumbleweed_updater.intervals import INTERVALS, is_valid, oncalendar_for  # noqa: E402
 from tumbleweed_updater.paths import CHECK_TIMER, CHECK_TIMER_DROPIN  # noqa: E402

@@ -21,6 +21,10 @@ HELPER_CHECK = os.path.join(LIBEXEC_DIR, "check")
 HELPER_SET_INTERVAL = os.path.join(LIBEXEC_DIR, "set-interval")
 HELPER_RUN_UPDATE = os.path.join(LIBEXEC_DIR, "run-update")
 HELPER_SNAPSHOTS = os.path.join(LIBEXEC_DIR, "snapshots")
+# Rollback and delete live in their own helper, behind their own polkit action,
+# so that they always prompt instead of riding the cached authorisation the
+# read-only listing keeps alive.
+HELPER_SNAPSHOTS_MANAGE = os.path.join(LIBEXEC_DIR, "snapshots-manage")
 
 # When running straight from a source checkout (no RPM installed), the helpers
 # live next to the repo. resolve_helper() prefers the installed copy.
@@ -62,6 +66,7 @@ ACTION_CHECK = "org.opensuse.tumbleweedupdater.check"
 ACTION_SET_INTERVAL = "org.opensuse.tumbleweedupdater.set-interval"
 ACTION_UPDATE = "org.opensuse.tumbleweedupdater.update"
 ACTION_SNAPSHOTS = "org.opensuse.tumbleweedupdater.snapshots"
+ACTION_SNAPSHOTS_MANAGE = "org.opensuse.tumbleweedupdater.snapshots-manage"
 
 # systemd unit that runs HELPER_CHECK on a timer.
 CHECK_TIMER = "tumbleweed-updater-check.timer"

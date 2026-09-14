@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .dupargs import FLAGS, VALUED, unknown_args
 from .icons import idle_icon, text_color
 from .intervals import INTERVALS
 from .settings import (
@@ -37,7 +38,15 @@ from .settings import (
     SettingsStore,
 )
 
-_AUTOSTART = os.path.expanduser("~/.config/autostart/tumbleweed-updater.desktop")
+def _autostart_path() -> str:
+    """Where the XDG autostart entry goes.
+
+    Read at call time and through XDG_CONFIG_HOME, rather than pinned to
+    ~/.config at import: that is what the spec says, and it keeps the tests out
+    of the real user's configuration.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "autostart", "tumbleweed-updater.desktop")
 
 _AUTOSTART_BODY = """\
 [Desktop Entry]
@@ -48,6 +57,21 @@ Icon=tumbleweed-updater
 Terminal=false
 X-GNOME-Autostart-enabled=true
 """
+
+
+def _desktop_exec(path: str) -> str:
+    """Quote *path* for a desktop file's Exec= key.
+
+    Per the Desktop Entry spec: reserved characters mean the argument must be
+    double-quoted, and backslash, double quote, backtick and dollar are escaped
+    with a backslash inside those quotes.
+    """
+    if not any(c in path for c in ' \t\n"\'\\><~|&;$*?#()`'):
+        return path
+    escaped = path
+    for ch in "\\`$\"":
+        escaped = escaped.replace(ch, "\\" + ch)
+    return f'"{escaped}"'
 
 
 class _ColorButton(QPushButton):
@@ -90,9 +114,12 @@ class SettingsDialog(QDialog):
     def __init__(self, store: SettingsStore, privileged, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Tumbleweed Updater — Settings")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self._store = store
         self._privileged = privileged
         self._prefs = store.load()
+        self._interval_connected = False
+        self.finished.connect(self._disconnect_runner)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -117,7 +144,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self._on_launch)
 
         self._autostart = QCheckBox("Start automatically at login (in the tray)")
-        self._autostart.setChecked(os.path.exists(_AUTOSTART))
+        self._autostart.setChecked(os.path.exists(_autostart_path()))
         form.addRow("", self._autostart)
 
         self._notify = QCheckBox("Show a notification when updates appear")
@@ -217,8 +244,9 @@ class SettingsDialog(QDialog):
         self._dup_args = QLineEdit(self._prefs.zypper_dup_args)
         self._dup_args.setPlaceholderText("(none)")
         self._dup_args.setToolTip(
-            "Anything typed here is appended to 'zypper dup' as-is, after the "
-            "options set by the checkboxes above."
+            "Appended to 'zypper dup' after the options set by the checkboxes "
+            "above. Only options the privileged helper accepts are allowed:\n"
+            + ", ".join(sorted(FLAGS | set(VALUED)))
         )
         grid.addRow("Extra 'zypper dup' options:", self._dup_args)
 
@@ -315,10 +343,22 @@ class SettingsDialog(QDialog):
     # -- persistence ---------------------------------------------------------- #
 
     def _save(self) -> None:
+        # The helper refuses anything outside its allow-list, so catch it here
+        # where the user can still see which word was the problem.
+        rejected = unknown_args(self._dup_args.text().split())
+        if rejected:
+            QMessageBox.warning(
+                self,
+                "Unsupported zypper dup option",
+                "These will not be accepted by the update helper:\n\n"
+                + " ".join(rejected)
+                + "\n\nAllowed options are:\n"
+                + ", ".join(sorted(FLAGS | set(VALUED))),
+            )
+            return
         new = Prefs(
             check_interval=self._interval.currentText(),
             check_on_launch=self._on_launch.isChecked(),
-            start_in_tray=self._prefs.start_in_tray,
             notify_on_updates=self._notify.isChecked(),
             zypper_dup_args=self._dup_args.text().strip(),
             include_flatpak=self._flatpak.isChecked(),
@@ -337,12 +377,34 @@ class SettingsDialog(QDialog):
         self._apply_autostart(self._autostart.isChecked())
 
         if new.check_interval != self._prefs.check_interval:
+            # One connection per dialog, dropped again as soon as the answer
+            # arrives: the runner is shared and outlives us, so a connection
+            # left behind would warn once per settings dialog ever opened.
             self._privileged.intervalFinished.connect(self._interval_done)
-            self._privileged.set_interval(new.check_interval)
+            self._interval_connected = True
+            if not self._privileged.set_interval(new.check_interval):
+                self._disconnect_runner()
+                QMessageBox.warning(
+                    self,
+                    "Could not change the schedule",
+                    "Another schedule change is still in progress. The rest of "
+                    "your settings were saved.",
+                )
+                self.accept()
         else:
             self.accept()
 
+    def _disconnect_runner(self, _result: int = 0) -> None:
+        if not self._interval_connected:
+            return
+        self._interval_connected = False
+        try:
+            self._privileged.intervalFinished.disconnect(self._interval_done)
+        except (RuntimeError, TypeError):
+            pass  # already gone
+
     def _interval_done(self, ok: bool, message: str) -> None:
+        self._disconnect_runner()
         if not ok:
             QMessageBox.warning(
                 self,
@@ -353,13 +415,14 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _apply_autostart(enabled: bool) -> None:
+        path = _autostart_path()
         if enabled:
-            os.makedirs(os.path.dirname(_AUTOSTART), exist_ok=True)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             exec_path = shutil.which("tumbleweed-updater") or "tumbleweed-updater"
-            with open(_AUTOSTART, "w", encoding="utf-8") as fh:
-                fh.write(_AUTOSTART_BODY.format(exec=exec_path))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(_AUTOSTART_BODY.format(exec=_desktop_exec(exec_path)))
         else:
             try:
-                os.unlink(_AUTOSTART)
+                os.unlink(path)
             except FileNotFoundError:
                 pass

@@ -24,7 +24,12 @@ from PySide6.QtGui import (
     QKeyEvent,
     QPainter,
 )
-from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QMenu
+from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QApplication,
+    QMenu,
+    QMessageBox,
+)
 
 _HEX = re.compile(r"^[0-9a-fA-F]{6}$")
 
@@ -157,13 +162,25 @@ class TerminalWidget(QAbstractScrollArea):
 
     def feed(self, data: bytes) -> None:
         follow = self.verticalScrollBar().value() == self.verticalScrollBar().maximum()
-        self._stream.feed(data)
+        try:
+            self._stream.feed(data)
+        except Exception:
+            # This is called from the PTY notifier's slot, so anything pyte
+            # chokes on would otherwise abort the process. Losing a chunk of
+            # output is the better failure.
+            pass
         self._sync_scrollbar(follow)
         self.viewport().update()
 
     def append_notice(self, text: str) -> None:
-        """Inject a locally-generated line (e.g. '[process exited]')."""
-        self.feed(("\r\n" + text + "\r\n").encode("utf-8"))
+        """Inject locally-generated lines (e.g. '[process exited]').
+
+        Each newline is carriage-returned as well: on a real terminal a bare
+        line feed moves down without returning to column 0, so a multi-line
+        notice would come out staircased across the screen.
+        """
+        body = text.replace("\r\n", "\n").replace("\n", "\r\n")
+        self.feed(("\r\n" + body + "\r\n").encode("utf-8"))
 
     def reset(self) -> None:
         self._screen.scrollback.clear()
@@ -370,9 +387,28 @@ class TerminalWidget(QAbstractScrollArea):
     def _paste(self) -> None:
         if not self._session_running():
             return
-        text = QApplication.clipboard().text()
-        if text:
-            self._session.write(text.encode("utf-8"))
+        text = _sanitise_paste(QApplication.clipboard().text())
+        if not text:
+            return
+        # A newline is an answer to whatever zypper is asking, and zypper is
+        # running as root here, so multi-line pastes are confirmed rather than
+        # submitted on the spot. This is the usual terminal-emulator guard.
+        if "\n" in text:
+            lines = text.count("\n") + 1
+            if (
+                QMessageBox.question(
+                    self,
+                    "Paste multiple lines?",
+                    f"The clipboard holds {lines} lines. Pasting them will "
+                    "answer any prompt the running command is showing.\n\n"
+                    "Paste anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                != QMessageBox.Yes
+            ):
+                return
+        self._session.write(text.encode("utf-8"))
 
     # -- keyboard ----------------------------------------------------------- #
 
@@ -420,6 +456,19 @@ class TerminalWidget(QAbstractScrollArea):
 
 
 # --------------------------------------------------------------------------- #
+
+def _sanitise_paste(text: str) -> str:
+    """Drop control characters from pasted text, keeping tab and newline.
+
+    Escape sequences in a paste would otherwise be interpreted by whatever is
+    reading the PTY rather than treated as the text the user thinks they are
+    pasting.
+    """
+    return "".join(
+        ch for ch in text.replace("\r\n", "\n").replace("\r", "\n")
+        if ch in "\t\n" or (ch.isprintable() and ch != "\x7f")
+    )
+
 
 def _colour(value: str, bold: bool, fallback: QColor) -> QColor | None:
     if value == "default":

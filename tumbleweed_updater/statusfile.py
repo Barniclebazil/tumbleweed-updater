@@ -114,17 +114,33 @@ def _action(value: str | None) -> Action:
 
 
 def read(path: str = STATUS_FILE) -> UpdateStatus | None:
+    """Parse the status file, or return None if it is missing or unusable.
+
+    Every failure mode is folded into None on purpose: this is called from a
+    QFileSystemWatcher slot, where an escaping exception aborts the process.
+    The wrong shape (a string where a mapping is expected, say) raises
+    TypeError or AttributeError rather than ValueError, so catch broadly.
+    """
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return from_dict(json.load(fh))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except Exception:
         return None
 
 
 def write(status: UpdateStatus, path: str = STATUS_FILE) -> None:
     """Atomically replace *path*. Called by the root checker."""
-    os.makedirs(os.path.dirname(path) or STATUS_DIR, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or STATUS_DIR, suffix=".tmp")
+    directory = os.path.dirname(path) or STATUS_DIR
+    os.makedirs(directory, exist_ok=True)
+    # pkexec does not reset the umask, so when the GUI triggers the check the
+    # directory would inherit the user's: 0700 leaves the GUI unable to read
+    # its own status file ever again, 0777 leaves a world-writable directory
+    # in /run. makedirs(mode=...) is masked too, hence the explicit chmod.
+    try:
+        os.chmod(directory, 0o755)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(to_dict(status), fh, indent=2)

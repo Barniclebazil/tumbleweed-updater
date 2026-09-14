@@ -112,3 +112,66 @@ def test_terminal_forwards_keystrokes(app):
     assert _pump_until(lambda: "ping" in term.buffer_text())
     sess.write(b"\x04")  # Ctrl-D
     assert _pump_until(lambda: not sess.is_running)
+
+
+def test_notice_lines_start_at_column_zero(app):
+    """A bare line feed moves down without returning to column 0, so a
+    multi-line notice would come out staircased."""
+    term = TerminalWidget()
+    term.resize(800, 400)
+    term.append_notice("first line\nsecond line\nthird line")
+    lines = [ln for ln in term.buffer_text().splitlines() if ln]
+    assert lines == ["first line", "second line", "third line"]
+
+
+def test_paste_sanitiser_keeps_text_and_drops_control_characters():
+    """Pasted text is fed to a process running as root, so escape sequences in
+    it must not be interpreted as terminal commands."""
+    from tumbleweed_updater.terminal import _sanitise_paste
+
+    assert _sanitise_paste("plain text") == "plain text"
+    assert _sanitise_paste("a\x1b[31mb\x07c") == "a[31mbc"
+    assert _sanitise_paste("one\r\ntwo\rthree") == "one\ntwo\nthree"
+    assert _sanitise_paste("keep\tthe\ttabs") == "keep\tthe\ttabs"
+
+
+def test_feed_survives_a_parser_error(app, monkeypatch):
+    """feed() runs in the PTY notifier's slot, where an escaping exception
+    aborts the process."""
+    term = TerminalWidget()
+    term.resize(400, 200)
+
+    def boom(_data):
+        raise RuntimeError("bad escape")
+
+    monkeypatch.setattr(term._stream, "feed", boom)
+    term.feed(b"anything")  # must not raise
+
+
+def test_reaping_a_lingering_child_does_not_block_the_event_loop(app):
+    """A child that closes the PTY without exiting used to hold the GUI in a
+    blocking waitpid for as long as it lived."""
+    sess = PtySession()
+    done = []
+    sess.finished.connect(lambda code: done.append(code))
+    ticks = []
+
+    # Closes its descriptors (so the master sees EOF), ignores the SIGHUP that
+    # follows, and stays alive well past the reaper's patience.
+    sess.start(
+        ["/bin/sh", "-c", "trap '' HUP; exec 1>&- 2>&- 0<&-; sleep 20"],
+        rows=24,
+        cols=80,
+    )
+
+    heartbeat = QTimer()
+    heartbeat.setInterval(50)
+    heartbeat.timeout.connect(lambda: ticks.append(1))
+    heartbeat.start()
+    finished = _pump_until(lambda: done != [], timeout_ms=9000)
+    heartbeat.stop()
+    sess.kill()
+
+    assert finished, "the reaper never gave up"
+    assert done[0] < 0, "a child that never exited is not a clean exit"
+    assert len(ticks) > 10, "the event loop stalled while waiting"

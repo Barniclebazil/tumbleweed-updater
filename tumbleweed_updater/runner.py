@@ -80,9 +80,17 @@ class UpdateRunner(QObject):
         self._terminal.reset()
         self._next()
 
-    def cancel(self) -> None:
-        if self._session is not None and self._session.is_running:
-            self._session.terminate()
+    def cancel(self) -> bool:
+        """Ask the running step to stop. False if nothing could be asked.
+
+        Ctrl-C first, because the zypper step runs as root through pkexec and a
+        signal from this process would be refused; SIGTERM is only a fallback
+        for the flatpak steps, which run as us.
+        """
+        if self._session is None or not self._session.is_running:
+            return False
+        self._queue.clear()  # stop at the current step, whatever it answers
+        return self._session.interrupt() or self._session.terminate()
 
     # -- queue pump ---------------------------------------------------------- #
 

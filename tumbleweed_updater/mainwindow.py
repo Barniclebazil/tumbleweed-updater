@@ -8,7 +8,6 @@ from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QCheckBox,
     QHBoxLayout,
     QLabel,
@@ -70,6 +69,7 @@ class MainWindow(QMainWindow):
     checkRequested = Signal()
     settingsApplied = Signal()  # emitted after the settings dialog is accepted
     restartRequested = Signal()  # "Restart App" clicked on the update notice
+    quitRequested = Signal()  # Menu -> Quit; the app owns the confirmation
 
     def __init__(self, settings: SettingsStore, privileged) -> None:
         super().__init__()
@@ -128,6 +128,10 @@ class MainWindow(QMainWindow):
 
         self._banner = QLabel()
         self._banner.setWordWrap(True)
+        # These three carry zypper's and the helpers' own words. QLabel would
+        # otherwise sniff them for markup and render it.
+        for label in (self._headline, self._subline, self._banner):
+            label.setTextFormat(Qt.PlainText)
         self._banner.setStyleSheet(
             "background: #f67400; color: white; border-radius: 4px; padding: 6px;"
         )
@@ -207,7 +211,10 @@ class MainWindow(QMainWindow):
         about_act = QAction("About…", self)
         about_act.triggered.connect(self._open_about)
         quit_act = QAction("Quit", self)
-        quit_act.triggered.connect(QApplication.instance().quit)
+        # Not QApplication.quit directly: that would skip the "an update is
+        # still running" confirmation the tray's Quit goes through, and
+        # tearing down the terminal SIGHUPs a zypper transaction in flight.
+        quit_act.triggered.connect(self.quitRequested.emit)
         menu = self.menuBar().addMenu("&Menu")
         menu.addAction(settings_act)
         menu.addAction(snapshots_act)
@@ -311,6 +318,8 @@ class MainWindow(QMainWindow):
         if not (do_zypper or do_fp_sys or do_fp_user):
             return
 
+        dup_args = dup_args_from_prefs(prefs)
+
         lines = ["The following will run in the terminal below:"]
         if do_zypper:
             note = (
@@ -342,10 +351,15 @@ class MainWindow(QMainWindow):
                 lines.append("")
                 lines.append("Options in effect:")
                 lines += [f"  • {n}" for n in notes]
+            # Spell the command out: the free-text options field is stored in
+            # the user's config, so this is the only place the exact argument
+            # list that will run as root is visible.
+            lines.append("")
+            lines.append("  $ zypper dup " + " ".join(dup_args))
 
         steps = self._runner.build_queue(
             do_zypper=do_zypper,
-            dup_args=dup_args_from_prefs(prefs),
+            dup_args=dup_args,
             cleanup=prefs.cleanup_after_update,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
@@ -358,7 +372,10 @@ class MainWindow(QMainWindow):
         self._terminal.setFocus()
 
     def _runner_cancel(self) -> None:
-        self._runner.cancel()
+        if self._runner.cancel():
+            self._statusbar("Stopping after the current step…")
+        else:
+            self._statusbar("Nothing to cancel.")
 
     def _on_run_finished(self, ok: bool, message: str) -> None:
         self._set_running(False)

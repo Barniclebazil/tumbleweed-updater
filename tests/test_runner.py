@@ -93,3 +93,35 @@ def test_queue_stops_on_failure(app):
     assert "exit 3" in results[0][1]
     assert "SHOULD_NOT_APPEAR" not in term.buffer_text()
     assert not runner.is_running
+
+
+def test_cancel_interrupts_rather_than_signalling(app):
+    """The zypper step runs as root through pkexec, so os.kill() from here is
+    refused with EPERM. Ctrl-C down the PTY reaches it regardless of who owns
+    the process, so that is what Cancel must use."""
+    term = TerminalWidget()
+    term.resize(600, 300)
+    runner = UpdateRunner(term)
+    results = []
+    runner.finished.connect(lambda ok, msg: results.append((ok, msg)))
+
+    # trap makes the difference visible: SIGINT exits 42, SIGTERM exits 43.
+    runner.start(
+        [
+            Step(
+                "sleeping",
+                ["/bin/sh", "-c", "trap 'exit 42' INT; trap 'exit 43' TERM; sleep 30"],
+            )
+        ]
+    )
+    assert _wait(lambda: runner.is_running)
+    assert runner.cancel() is True
+    assert _wait(lambda: results != [])
+    assert results[0][0] is False
+    assert "exit 42" in results[0][1]
+
+
+def test_cancel_with_nothing_running_says_so(app):
+    term = TerminalWidget()
+    runner = UpdateRunner(term)
+    assert runner.cancel() is False

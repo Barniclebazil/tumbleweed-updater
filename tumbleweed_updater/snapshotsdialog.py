@@ -29,6 +29,11 @@ class SnapshotsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Tumbleweed Updater — Snapshots")
         self.resize(640, 460)
+        # The runner outlives this dialog, so a dialog left alive after it is
+        # closed keeps receiving results meant for its replacement (and used
+        # to crash in _show_status with a _status_pair of None). Die on close,
+        # and drop the connection the moment the dialog is done either way.
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self._privileged = privileged
         self._busy = False
         self._pending_action: str | None = None
@@ -71,8 +76,15 @@ class SnapshotsDialog(QDialog):
         layout.addWidget(box)
 
         self._privileged.snapshotsFinished.connect(self._on_finished)
+        self.finished.connect(self._disconnect_runner)
         self._update_buttons()
         self._load()
+
+    def _disconnect_runner(self, _result: int = 0) -> None:
+        try:
+            self._privileged.snapshotsFinished.disconnect(self._on_finished)
+        except (RuntimeError, TypeError):
+            pass  # already gone
 
     # -- running the helper -------------------------------------------------- #
 
@@ -82,11 +94,18 @@ class SnapshotsDialog(QDialog):
     def _run(self, args: list[str]) -> None:
         if self._busy:
             return
-        self._busy = True
         self._pending_action = args[0]
         self._hint.setText("Working…")
         self._set_controls_enabled(False)
-        self._privileged.run_snapshots(args)
+        if not self._privileged.run_snapshots(args):
+            # Another snapshot operation is still running (a leftover from a
+            # previous dialog, say): stay usable instead of hanging on a
+            # result that will never be ours.
+            self._pending_action = None
+            self._hint.setText("Another snapshot operation is still running.")
+            self._set_controls_enabled(True)
+            return
+        self._busy = True
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self._btn_refresh.setEnabled(enabled)

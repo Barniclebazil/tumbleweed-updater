@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Privileged snapshot operations: list, compare, roll back, delete.
+"""Privileged read-only snapshot queries: list and compare.
 
 Runs as root via pkexec. ``snapper list`` refuses to run as a normal user, so
 even read-only listing needs this helper - unlike ``check``, there is no
@@ -8,14 +8,14 @@ passwordless case here (see data/org.opensuse.tumbleweedupdater.policy).
 Usage:
     snapshots list
     snapshots status <pre-number> <post-number>
-    snapshots rollback <number>
-    snapshots delete <number>
 
-``list`` and ``status`` print a JSON result to stdout. ``rollback`` and
-``delete`` print nothing on success; failure is the exit code plus a stderr
-message, the same convention as helper/set-interval. Every numeric argument
-is validated here before being handed to snapper - polkit passes them through
-untrusted.
+Both print a JSON result to stdout. Rolling back and deleting live in
+``snapshots-manage``, behind their own polkit action: this one's authorisation
+is cached (the dialog lists repeatedly), and a cached authorisation must not be
+able to delete anything.
+
+Every numeric argument is validated here before being handed to snapper -
+polkit matches only the program path, so the arguments arrive untrusted.
 """
 
 from __future__ import annotations
@@ -24,11 +24,15 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the repository root when running from a checkout; see helper/check for why
+# this is guarded.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
+    sys.path.insert(0, _REPO)
 
 from tumbleweed_updater import snapshots  # noqa: E402
 
-_USAGE = "usage: snapshots <list|status <pre> <post>|rollback <n>|delete <n>>\n"
+_USAGE = "usage: snapshots <list|status <pre> <post>>\n"
 
 
 def _int_arg(value: str) -> int | None:
@@ -89,21 +93,6 @@ def main() -> int:
             sys.stderr.write("status: snapshot numbers must be integers\n")
             return 2
         return _print_status(pre, post)
-
-    if action in ("rollback", "delete") and len(args) == 2:
-        number = _int_arg(args[1])
-        if number is None:
-            sys.stderr.write(f"{action}: snapshot number must be an integer\n")
-            return 2
-        error = (
-            snapshots.rollback_to(number)
-            if action == "rollback"
-            else snapshots.delete_snapshot(number)
-        )
-        if error:
-            sys.stderr.write(error + "\n")
-            return 1
-        return 0
 
     sys.stderr.write(_USAGE)
     return 2

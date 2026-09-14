@@ -85,7 +85,6 @@ def test_settings_roundtrip_every_field(app):
     original = Prefs(
         check_interval="weekly",
         check_on_launch=False,
-        start_in_tray=False,
         notify_on_updates=False,
         zypper_dup_args="--no-recommends",
         include_flatpak=False,
@@ -128,3 +127,16 @@ def test_cleanup_default_is_on():
     assert Prefs().dup_allow_vendor_change is False
     assert Prefs().dup_non_interactive is False
     assert Prefs().dup_download_in_advance is False
+
+
+def test_free_text_options_do_not_duplicate_the_toggles(app):
+    """A duplicate option is dropped with its value, or a bare --download would
+    be left behind to swallow the next argument."""
+    both = Prefs(dup_download_in_advance=True, zypper_dup_args="--download in-advance --details")
+    assert dup_args_from_prefs(both) == ["--download", "in-advance", "--details"]
+
+    only_typed = Prefs(zypper_dup_args="--download in-advance")
+    assert dup_args_from_prefs(only_typed) == ["--download", "in-advance"]
+
+    flag = Prefs(dup_non_interactive=True, zypper_dup_args="-y --details")
+    assert dup_args_from_prefs(flag) == ["-y", "--auto-agree-with-licenses", "--details"]
