@@ -180,3 +180,45 @@ def test_reaping_a_lingering_child_does_not_block_the_event_loop(app):
     assert finished, "the reaper never gave up"
     assert done[0] < 0, "a child that never exited is not a clean exit"
     assert len(ticks) > 10, "the event loop stalled while waiting"
+
+
+def test_clear_empties_the_terminal_and_tells_its_owner(app):
+    """The app hides to the tray rather than quitting, so there has to be a way
+    to get rid of an old transcript without waiting for the next run."""
+    term = TerminalWidget()
+    term.resize(400, 200)
+    term.feed(b"some-old-output\r\n" * 60)  # enough to spill into scrollback
+    assert "some-old-output" in term.buffer_text()
+    assert len(term._screen.scrollback) > 0
+
+    emitted = []
+    term.clearRequested.connect(lambda: emitted.append(True))
+
+    assert term.clear() is True
+    assert "some-old-output" not in term.buffer_text()
+    assert len(term._screen.scrollback) == 0
+    assert emitted == [True], "the owner of the panel has to be told to collapse it"
+
+
+def test_clear_is_refused_while_a_command_runs(app):
+    """Clearing mid-run throws away the live transcript and leaves the screen
+    being redrawn from partial output."""
+    term = TerminalWidget()
+    term.resize(400, 200)
+    sess = PtySession()
+    term.attach(sess)
+    sess.start(["/bin/cat"], rows=24, cols=80)
+    _pump_until(lambda: sess.is_running, 2000)
+    sess.write(b"mid-run\r")
+    assert _pump_until(lambda: "mid-run" in term.buffer_text())
+
+    emitted = []
+    term.clearRequested.connect(lambda: emitted.append(True))
+
+    assert term.clear() is False
+    assert "mid-run" in term.buffer_text()
+    assert emitted == []
+
+    sess.write(b"\x04")  # Ctrl-D
+    assert _pump_until(lambda: not sess.is_running)
+    assert term.clear() is True, "allowed again once the command has exited"

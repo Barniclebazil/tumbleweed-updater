@@ -34,6 +34,7 @@ from .settings import (
     DEFAULT_TERM_FONT_SIZE,
     ICON_STYLES,
     REBOOT_ACTIONS,
+    RESET_AFTER_UPDATE,
     Prefs,
     SettingsStore,
 )
@@ -241,6 +242,21 @@ class SettingsDialog(QDialog):
         )
         grid.addRow("When an update needs a reboot:", self._reboot_action)
 
+        self._reset_after = QComboBox()
+        for key, label in RESET_AFTER_UPDATE.items():
+            self._reset_after.addItem(label, key)
+        idx = self._reset_after.findData(self._prefs.reset_after_update)
+        self._reset_after.setCurrentIndex(idx if idx >= 0 else 0)
+        self._reset_after.setToolTip(
+            "The terminal below the package list keeps the last update's output "
+            "until this point, then clears itself and collapses out of the way.\n\n"
+            "An update that failed always keeps its log, whichever option is "
+            "chosen - it is the only record of what went wrong. So does one that "
+            "is still running. You can also clear the log yourself at any time "
+            "with the 'Hide log' button or the terminal's right-click menu."
+        )
+        grid.addRow("Reset the window after an update:", self._reset_after)
+
         self._dup_args = QLineEdit(self._prefs.zypper_dup_args)
         self._dup_args.setPlaceholderText("(none)")
         self._dup_args.setToolTip(
@@ -372,6 +388,7 @@ class SettingsDialog(QDialog):
             dup_download_in_advance=self._download_first.isChecked(),
             cleanup_after_update=self._cleanup.isChecked(),
             reboot_action=self._reboot_action.currentData(),
+            reset_after_update=self._reset_after.currentData(),
         )
         self._store.save(new)
         self._apply_autostart(self._autostart.isChecked())

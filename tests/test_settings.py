@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from tumbleweed_updater.settings import (
     REBOOT_ACTIONS,
+    RESET_AFTER_UPDATE,
     Prefs,
     SettingsStore,
     dup_args_from_prefs,
@@ -93,6 +94,7 @@ def test_settings_roundtrip_every_field(app):
         dup_download_in_advance=True,
         cleanup_after_update=False,
         reboot_action="offer",
+        reset_after_update="never",
         term_font_family="Fira Code",
         term_font_size=14,
         term_bg="#112233",
@@ -120,6 +122,21 @@ def test_reboot_action_falls_back_on_junk(app):
     p.reboot_action = "not-a-real-action"
     store.save(p)
     assert store.load().reboot_action in REBOOT_ACTIONS
+
+
+def test_reset_after_update_falls_back_on_junk(app):
+    store = SettingsStore()
+    p = Prefs()
+    p.reset_after_update = "not-a-real-mode"
+    store.save(p)
+    assert store.load().reset_after_update in RESET_AFTER_UPDATE
+
+
+def test_reset_after_update_defaults_to_clearing_on_close():
+    """The app hides to the tray rather than quitting, so out of the box the
+    window must not reopen still showing the last update's transcript."""
+    assert Prefs().reset_after_update == "on_close"
+    assert "on_close" in RESET_AFTER_UPDATE
 
 
 def test_cleanup_default_is_on():

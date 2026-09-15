@@ -85,6 +85,7 @@ class _Screen(pyte.Screen):
 class TerminalWidget(QAbstractScrollArea):
     keyForwarded = Signal()
     resizedGrid = Signal(int, int)  # rows, cols
+    clearRequested = Signal()  # "Clear" chosen from the context menu
 
     def __init__(
         self,
@@ -188,6 +189,21 @@ class TerminalWidget(QAbstractScrollArea):
         self._sel_anchor = self._sel_head = None
         self._sync_scrollbar(True)
         self.viewport().update()
+
+    def clear(self) -> bool:
+        """Drop the transcript at the user's request. False if it was refused.
+
+        Refused while a command is running: clearing then would throw away the
+        live transcript and leave the screen being redrawn from partial output.
+        The widget knows nothing about the panel it sits in, so whoever owns
+        that is told through :attr:`clearRequested` and decides for itself
+        whether to collapse it too.
+        """
+        if self._session_running():
+            return False
+        self.reset()
+        self.clearRequested.emit()
+        return True
 
     # -- geometry --------------------------------------------------------- #
 
@@ -349,6 +365,9 @@ class TerminalWidget(QAbstractScrollArea):
         act_copy.setEnabled(self._normalized_selection() is not None)
         act_all = menu.addAction("Copy Everything")
         act_paste = menu.addAction("Paste")
+        menu.addSeparator()
+        act_clear = menu.addAction("Clear")
+        act_clear.setEnabled(not self._session_running())
         chosen = menu.exec(event.globalPos())
         if chosen is act_copy:
             QGuiApplication.clipboard().setText(self.selected_text())
@@ -356,6 +375,8 @@ class TerminalWidget(QAbstractScrollArea):
             QGuiApplication.clipboard().setText(self.buffer_text())
         elif chosen is act_paste:
             self._paste()
+        elif chosen is act_clear:
+            self.clear()
 
     def selected_text(self) -> str:
         sel = self._normalized_selection()

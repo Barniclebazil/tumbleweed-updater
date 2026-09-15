@@ -28,6 +28,7 @@ __all__ = [
     "ICON_STYLES",
     "DEFAULT_ICON_STYLE",
     "REBOOT_ACTIONS",
+    "RESET_AFTER_UPDATE",
     "dup_args_from_prefs",
 ]
 
@@ -37,6 +38,18 @@ REBOOT_ACTIONS = {
     "offer": "Offer to reboot now",
 }
 DEFAULT_REBOOT_ACTION = "notify"
+
+# When to put the window back into its just-launched state - terminal cleared,
+# log panel collapsed. The app hides to the tray rather than quitting, so
+# without this the last update's transcript stays on screen for the life of
+# the process. A failed run keeps its log whatever this says: the transcript
+# is the only record of why it failed.
+RESET_AFTER_UPDATE = {
+    "on_close": "When I close it to the tray",
+    "on_finish": "As soon as the update finishes",
+    "never": "Never — keep the log until I clear it",
+}
+DEFAULT_RESET_AFTER_UPDATE = "on_close"
 
 
 # Terminal appearance defaults. An empty font family means "the system's
@@ -71,6 +84,8 @@ class Prefs:
     dup_download_in_advance: bool = False
     cleanup_after_update: bool = True
     reboot_action: str = DEFAULT_REBOOT_ACTION  # key of REBOOT_ACTIONS
+    # When the window returns to its clean state (key of RESET_AFTER_UPDATE).
+    reset_after_update: str = DEFAULT_RESET_AFTER_UPDATE
     # Embedded-terminal appearance.
     term_font_family: str = ""
     term_font_size: int = DEFAULT_TERM_FONT_SIZE
@@ -122,6 +137,11 @@ class SettingsStore:
                 REBOOT_ACTIONS,
                 d.reboot_action,
             ),
+            reset_after_update=_one_of(
+                s.value("update/resetAfter", d.reset_after_update, str),
+                RESET_AFTER_UPDATE,
+                d.reset_after_update,
+            ),
         )
 
     def save(self, p: Prefs) -> None:
@@ -141,6 +161,7 @@ class SettingsStore:
         s.setValue("zypper/downloadInAdvance", p.dup_download_in_advance)
         s.setValue("update/cleanup", p.cleanup_after_update)
         s.setValue("update/rebootAction", p.reboot_action)
+        s.setValue("update/resetAfter", p.reset_after_update)
         s.sync()
 
 

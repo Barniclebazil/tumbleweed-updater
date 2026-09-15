@@ -17,6 +17,11 @@ Features:
    (hourly to weekly, or manual) is set from the app's settings.
 6. Lets you browse the Btrfs snapshots snapper has taken, see what changed
    in a pre/post pair, roll back to one, or delete one (Menu → Snapshots…).
+7. Returns to a clean state once an update is done. Closing the window to the
+   tray clears the terminal and collapses it, so the next time you open the
+   window you are not still looking at the last update's output. When that
+   happens is configurable in the settings, and you can clear the log yourself
+   at any time with the "Hide log" button or the terminal's right-click menu.
 
 ## Screenshots
 

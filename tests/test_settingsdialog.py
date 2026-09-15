@@ -67,6 +67,20 @@ def test_an_allowed_option_saves(app, store):
     dialog.close()
 
 
+def test_reset_after_update_saves_the_key_not_the_label(app, store):
+    """The combo shows a sentence; what is persisted has to be the key that
+    MainWindow compares against."""
+    dialog = SettingsDialog(store, _StubRunner())
+    idx = dialog._reset_after.findData("on_finish")
+    assert idx >= 0, "every RESET_AFTER_UPDATE key must be offered"
+    dialog._reset_after.setCurrentIndex(idx)
+
+    dialog._save()
+
+    assert store.load().reset_after_update == "on_finish"
+    dialog.close()
+
+
 def test_autostart_exec_is_quoted_when_it_has_to_be():
     assert _desktop_exec("/usr/bin/tumbleweed-updater") == "/usr/bin/tumbleweed-updater"
     assert _desktop_exec("/home/a b/tw") == '"/home/a b/tw"'

@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._runner = UpdateRunner(self._terminal, self)
         self._runner.stepStarted.connect(lambda label: self._statusbar(label))
         self._runner.finished.connect(self._on_run_finished)
+        self._terminal.clearRequested.connect(self._reset_log_view)
 
         self._privileged.checkFinished.connect(self._on_check_finished)
 
@@ -185,6 +186,12 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         self._btn_check = QPushButton("Check now")
         self._btn_check.clicked.connect(self._on_check_clicked)
+        self._btn_hide_log = QPushButton("Hide log")
+        self._btn_hide_log.setToolTip(
+            "Clear the terminal and collapse it out of the way."
+        )
+        self._btn_hide_log.clicked.connect(self._reset_log_view)
+        self._btn_hide_log.hide()
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setMaximumWidth(140)
@@ -196,6 +203,7 @@ class MainWindow(QMainWindow):
         self._btn_cancel.clicked.connect(self._runner_cancel)
         self._btn_cancel.hide()
         buttons.addWidget(self._btn_check)
+        buttons.addWidget(self._btn_hide_log)
         buttons.addWidget(self._progress)
         buttons.addStretch(1)
         buttons.addWidget(self._btn_cancel)
@@ -365,6 +373,7 @@ class MainWindow(QMainWindow):
             do_flatpak_user=do_fp_user,
         )
         self._terminal_box.show()
+        self._update_log_controls()
         self._terminal.append_notice("\n".join(lines))
         self._set_running(True)
         self.stateChanged.emit(TrayState.BUSY, "Installing updates…")
@@ -384,7 +393,12 @@ class MainWindow(QMainWindow):
             self._handle_reboot_needed()
         if not ok:
             self._show_banner(message)
-        # Re-check so the list and counts reflect reality.
+        # A run that failed keeps its log whatever the preference says: the
+        # transcript is the only record of what went wrong.
+        if ok and self._settings.load().reset_after_update == "on_finish":
+            self._reset_log_view()
+        # Re-check so the list and counts reflect reality. This puts its own
+        # message in the status bar, so it has to come after the reset.
         self._on_check_clicked()
 
     def _handle_reboot_needed(self) -> None:
@@ -532,6 +546,31 @@ class MainWindow(QMainWindow):
             not running and self._status.flatpak.count > 0
         )
         self._progress.setVisible(running)
+        self._update_log_controls()
+
+    def _update_log_controls(self) -> None:
+        # isVisibleTo(), not isVisible(): a child of a window that has never
+        # been shown reports isVisible() == False, which is wrong both while the
+        # app sits in the tray and under the offscreen platform the tests use.
+        self._btn_hide_log.setVisible(
+            self._terminal_box.isVisibleTo(self._splitter)
+            and not self._runner.is_running
+        )
+
+    def _reset_log_view(self) -> None:
+        """Put the window back into its just-launched state.
+
+        The app hides to the tray rather than quitting, so without this the last
+        update's transcript - and the terminal's 20,000-line scrollback - stay
+        around for the life of the process. A run still in flight keeps its log
+        whichever path got here: it is the only view onto what is happening.
+        """
+        if self._runner.is_running:
+            return
+        self._terminal.reset()
+        self._terminal_box.hide()
+        self.statusBar().clearMessage()
+        self._update_log_controls()
 
     def _statusbar(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
@@ -595,6 +634,8 @@ class MainWindow(QMainWindow):
             ):
                 event.ignore()
                 return
+        elif self._settings.load().reset_after_update == "on_close":
+            self._reset_log_view()
         # Hide to tray instead of quitting.
         event.ignore()
         self.hide()
