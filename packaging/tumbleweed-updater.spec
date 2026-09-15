@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.6.0
+Version:        0.7.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Tue Sep 15 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.7.0
+- The window now returns to a clean state after an update: closing it to the tray clears the embedded terminal and collapses it, a new setting moves that to as soon as the update finishes or turns it off, and the log can be cleared on demand with the new Hide log button or the terminal's right-click Clear entry.
+
 * Mon Sep 14 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.6.0
 - Security and reliability release: the single-instance socket moves out of /tmp, the status directory no longer inherits the caller's umask, the update helper validates its zypper options against an allow-list, snapshot rollback and delete move behind a polkit action that always prompts, Cancel can now stop a running upgrade, and Menu -> Quit no longer aborts an update without asking.
 
