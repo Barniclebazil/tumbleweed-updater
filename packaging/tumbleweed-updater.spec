@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.7.0
+Version:        0.7.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sat Sep 19 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.7.1
+- The Tumbleweed tray icon is now the project's own logo rather than a drawn stand-in, a second openSUSE style adds the chameleon head, and Tumbleweed replaces the shield as the default icon.
+
 * Tue Sep 15 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.7.0
 - The window now returns to a clean state after an update: closing it to the tray clears the embedded terminal and collapses it, a new setting moves that to as soon as the update finishes or turns it off, and the log can be cleared on demand with the new Hide log button or the terminal's right-click Clear entry.
 
