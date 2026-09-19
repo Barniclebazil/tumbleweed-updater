@@ -59,15 +59,17 @@ DEFAULT_TERM_FG = "#f0f0f0"
 DEFAULT_TERM_FONT_SIZE = 10
 
 # Tray/window icon styles -> label. Each name has a matching
-# data/icons/styles/<name>.svg (monochrome, currentColor stroke).
+# data/icons/styles/<name>.svg (monochrome; currentColor as the stroke for the
+# line-art styles, as the fill for the two openSUSE logos).
 ICON_STYLES = {
     "tumbleweed": "Tumbleweed",
+    "opensuse": "openSUSE",
     "refresh": "Refresh arrows",
     "arrow": "Up arrow",
     "shield": "Shield",
     "package": "Package box",
 }
-DEFAULT_ICON_STYLE = "shield"
+DEFAULT_ICON_STYLE = "tumbleweed"
 
 
 @dataclass

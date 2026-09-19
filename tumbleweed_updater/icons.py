@@ -1,6 +1,8 @@
 """Tray/window icons.
 
-Each icon *style* is a single monochrome SVG whose stroke is ``currentColor``.
+Each icon *style* is a single monochrome SVG that paints itself in
+``currentColor`` - the stroke for the line-art styles, the fill for the two
+openSUSE logos.
 For the idle state we substitute the current palette's text colour so it follows
 a light or dark Plasma theme; for "updates available" we substitute openSUSE
 orange so it stands out regardless of theme.

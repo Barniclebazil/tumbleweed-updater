@@ -64,3 +64,16 @@ is enabled. You'll find it in the system tray from then on.
 tumbleweed-updater          # open the window
 tumbleweed-updater --tray   # start hidden in the tray (used for autostart)
 ```
+
+## Icon credits
+
+The "Tumbleweed" and "openSUSE" tray icon styles are the openSUSE project's own
+logos, recoloured to a single `currentColor` so they follow the Plasma theme:
+
+1. `data/icons/styles/tumbleweed.svg` — from the openSUSE wiki,
+   [File:Tumbleweed-logo.svg](https://en.opensuse.org/File:Tumbleweed-logo.svg).
+2. `data/icons/styles/opensuse.svg` — from the openSUSE artwork repository,
+   [logos/buttons/button-colour-transparent.svg](https://github.com/openSUSE/artwork/blob/master/logos/buttons/button-colour-transparent.svg).
+
+Both marks are trademarks of SUSE LLC and are used here only to identify the
+distribution this tool updates.
