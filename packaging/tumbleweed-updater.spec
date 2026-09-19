@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.7.1
+Version:        0.7.2
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sat Sep 19 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.7.2
+- The application menu icon is now the Tumbleweed logo as well, so it matches the tray icon instead of keeping the old shield.
+
 * Sat Sep 19 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.7.1
 - The Tumbleweed tray icon is now the project's own logo rather than a drawn stand-in, a second openSUSE style adds the chameleon head, and Tumbleweed replaces the shield as the default icon.
 
