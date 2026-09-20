@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import partial
 
 from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QPalette
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, __version__
 from .icons import window_icon
+from .repos import list_repos
 from .runner import UpdateRunner
 from .settings import SettingsStore, dup_args_from_prefs
 from .settingsdialog import SettingsDialog
@@ -34,6 +36,49 @@ from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
 from .workers import FlatpakChecker, LockWaiter
 
+# Two looks for the one banner. Orange for something wrong, and a quiet
+# palette-coloured note for a statement of fact ("VLC is switched off"), which
+# would be alarming in orange. The neutral one is built from palette roles so
+# it follows the Plasma theme in both light and dark.
+#
+# The rules are scoped by object name because a plain "background: ..." on the
+# banner cascades into the button inside it, which then loses every trace of
+# being a button and reads as a line of text. Hence the explicit button rules
+# in both variants.
+_BANNER_STYLES = {
+    "warning": """
+        #banner { background: #f67400; color: white; border-radius: 4px; }
+        #banner QPushButton {
+            background: rgba(0, 0, 0, 0.22);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.7);
+            border-radius: 3px;
+            padding: 4px 12px;
+        }
+        #banner QPushButton:hover { background: rgba(0, 0, 0, 0.38); }
+        #banner QPushButton:disabled {
+            color: rgba(255, 255, 255, 0.5);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+    """,
+    "neutral": """
+        #banner {
+            background: palette(alternate-base);
+            color: palette(text);
+            border: 1px solid palette(mid);
+            border-radius: 4px;
+        }
+        #banner QPushButton {
+            background: palette(button);
+            color: palette(button-text);
+            border: 1px solid palette(mid);
+            border-radius: 3px;
+            padding: 4px 12px;
+        }
+        #banner QPushButton:hover { background: palette(midlight); }
+    """,
+}
+
 _ACTION_LABELS = {
     Action.UPGRADE: "upgrade",
     Action.DOWNGRADE: "downgrade",
@@ -42,6 +87,41 @@ _ACTION_LABELS = {
     Action.REMOVE: "remove",
     Action.CHANGE_ARCH: "arch change",
 }
+
+
+def _missing_sources_text(failed: list[tuple[str, str]], total: int) -> str:
+    """The warning for software sources that could not be reached.
+
+    Written for someone who has never heard of a repository: it says what was
+    left out, that the rest still works, what happens to the programs that came
+    from the missing source, and that it is probably not their problem to fix.
+    The user sees the source's display name; the alias stays internal.
+    """
+    names = [name for _alias, name in failed]
+    if len(names) == 1:
+        opening = (
+            f'Couldn\u2019t reach the software source "{names[0]}", so it has '
+            "been left out."
+        )
+        theirs = f"Programs you got from {names[0]}"
+        again = "until it can be reached again"
+    else:
+        opening = (
+            f"Couldn\u2019t reach {len(names)} of your software sources "
+            f"({', '.join(names)}), so they have been left out."
+        )
+        theirs = "Programs you got from them"
+        again = "until they can be reached again"
+    rest = (
+        f"The other {total} updates can still be installed."
+        if total
+        else "Everything else was checked as usual."
+    )
+    return (
+        f"{opening} {rest} {theirs} keep working, they just won\u2019t get new "
+        f"versions {again}. This is usually a temporary problem at the other "
+        "end, so it is worth trying again tomorrow."
+    )
 
 
 def _relative_time(iso: str) -> str:
@@ -135,23 +215,33 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._update_notice)
 
         self._banner = QWidget()
+        self._banner.setObjectName("banner")  # the style rules select on this
         self._banner.setAttribute(Qt.WA_StyledBackground, True)
-        self._banner.setStyleSheet(
-            "background: #f67400; color: white; border-radius: 4px;"
-        )
-        banner_l = QHBoxLayout(self._banner)
+        self._banner.setStyleSheet(_BANNER_STYLES["warning"])
+        # Stacked, not side by side: these messages are a few sentences long
+        # now, and a button sitting at the end of a wrapped paragraph reads as
+        # part of the sentence rather than as something to press.
+        banner_l = QVBoxLayout(self._banner)
         banner_l.setContentsMargins(8, 6, 8, 6)
+        banner_l.setSpacing(6)
         self._banner_label = QLabel()
         self._banner_label.setWordWrap(True)
         # These three carry zypper's and the helpers' own words. QLabel would
         # otherwise sniff them for markup and render it.
         for label in (self._headline, self._subline, self._banner_label):
             label.setTextFormat(Qt.PlainText)
-        banner_l.addWidget(self._banner_label, 1)
-        self._banner_btn = QPushButton("Wait for it and retry")
-        self._banner_btn.clicked.connect(self._on_wait_for_lock_clicked)
+        banner_l.addWidget(self._banner_label)
+        # The button's label and job both depend on what the banner is saying,
+        # so it is wired once to a dispatcher and _show_banner() sets the rest.
+        self._banner_btn = QPushButton()
+        self._banner_action = None
+        self._banner_btn.clicked.connect(self._on_banner_button)
         self._banner_btn.hide()
-        banner_l.addWidget(self._banner_btn)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self._banner_btn)
+        banner_l.addLayout(btn_row)
         self._banner.hide()
         outer.addWidget(self._banner)
 
@@ -506,22 +596,11 @@ class MainWindow(QMainWindow):
         checked = _relative_time(self._status.generated)
         if z.error:
             self._headline.setText("Could not check for system updates")
-            # A lock is the one error the user can do something about from
-            # here, so it is the one that gets a button.
-            self._show_banner(z.error, action=z.locked)
         elif total == 0:
             self._headline.setText("Your system is up to date")
-            self._hide_banner()
         else:
             self._headline.setText(f"{total} update(s) available")
-            if not self._status.snapshots_ok and z.count:
-                self._show_banner(
-                    "snapper-zypp-plugin is not installed — running the upgrade "
-                    "will NOT create a Btrfs snapshot. Install it with: "
-                    "zypper install snapper-zypp-plugin"
-                )
-            else:
-                self._hide_banner()
+        self._render_banner(z, total)
 
         bits = [f"Last checked {checked}"]
         if z.count and z.download_size:
@@ -612,14 +691,179 @@ class MainWindow(QMainWindow):
     def _statusbar(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
 
-    def _show_banner(self, text: str, action: bool = False) -> None:
+    def _show_banner(
+        self,
+        text: str,
+        button: str = "",
+        on_click=None,
+        tone: str = "warning",
+    ) -> None:
         self._banner_label.setText(text)
-        self._banner_btn.setVisible(action)
+        self._banner.setStyleSheet(_BANNER_STYLES.get(tone, _BANNER_STYLES["warning"]))
+        self._banner_action = on_click
+        self._banner_btn.setText(button)
+        self._banner_btn.setVisible(bool(button))
         self._banner_btn.setEnabled(True)
         self._banner.show()
 
     def _hide_banner(self) -> None:
+        self._banner_action = None
         self._banner.hide()
+
+    def _on_banner_button(self) -> None:
+        if self._banner_action is not None:
+            self._banner_action()
+
+    # -- banner ------------------------------------------------------------ #
+
+    def _render_banner(self, z, total: int) -> None:
+        """Decide what the banner says.
+
+        More than one of these can be true at once - a source that could not be
+        reached *and* no snapshot plugin, say - so the messages are joined
+        rather than one silently hiding another. The button belongs to the
+        first message that wants one, since there is only ever one button.
+        """
+        parts: list[str] = []
+        problem = False
+        button = ""
+        on_click = None
+
+        if z.error:
+            parts.append(z.error)
+            problem = True
+            # A lock is the one check failure the user can do something about
+            # from here, so it is the one that gets a button.
+            if z.locked:
+                button = "Wait for it and retry"
+                on_click = self._on_wait_for_lock_clicked
+
+        if z.failed_repos:
+            parts.append(_missing_sources_text(z.failed_repos, total))
+            problem = True
+            # Switching one off is a clear choice; with several it is not, so
+            # the text says what happened and the user decides which to act on.
+            if not button and len(z.failed_repos) == 1:
+                alias, name = z.failed_repos[0]
+                button = f"Stop using {name}"
+                on_click = partial(self._on_stop_using_source, alias, name)
+
+        for alias, name in self._sources_we_switched_off():
+            parts.append(
+                f"{name} is switched off, so its programs aren't being updated."
+            )
+            if not button:
+                button = f"Switch {name} back on"
+                on_click = partial(self._on_switch_source_back_on, alias, name)
+
+        if not z.error and total and not self._status.snapshots_ok and z.count:
+            parts.append(
+                "snapper-zypp-plugin is not installed — running the upgrade "
+                "will NOT create a Btrfs snapshot. Install it with: "
+                "zypper install snapper-zypp-plugin"
+            )
+            problem = True
+
+        if not parts:
+            self._hide_banner()
+            return
+        self._show_banner(
+            "\n\n".join(parts),
+            button=button,
+            on_click=on_click,
+            # Nothing is wrong when the only thing to say is that a source the
+            # user switched off is still off, so that one is not orange.
+            tone="warning" if problem else "neutral",
+        )
+
+    def _sources_we_switched_off(self) -> list[tuple[str, str]]:
+        """Sources this app disabled that are still disabled, as (alias, name).
+
+        Only ones this app switched off: most systems have sources disabled on
+        purpose (the debug and source repositories, the installation medium),
+        and offering to turn those back on would be noise. Aliases that have
+        since vanished from zypper's configuration are forgotten, so a deleted
+        source cannot leave a permanent note behind.
+
+        Listing costs a `zypper repos` (about 15ms, no network, no root) and
+        only happens when the list is non-empty, which for almost everyone
+        means never.
+        """
+        remembered = self._settings.disabled_sources()
+        if not remembered:
+            return []
+        listing = list_repos()
+        if listing.error:
+            return []
+        known = {r.alias for r in listing.repos}
+        still_there = [a for a in remembered if a in known]
+        if len(still_there) != len(remembered):
+            self._settings.set_disabled_sources(still_there)
+        out = []
+        for alias in still_there:
+            repo = listing.by_alias(alias)
+            if repo is not None and not repo.enabled:
+                out.append((repo.alias, repo.label))
+        return out
+
+    def _on_stop_using_source(self, alias: str, name: str) -> None:
+        if self._privileged.repos_running or self._runner.is_running:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                f"Stop using {name}?",
+                f"Tumbleweed Updater will stop looking to {name} for updates."
+                "\n\n"
+                "Anything you already installed from it stays on your computer "
+                "and keeps working. It just won't be offered new versions."
+                "\n\n"
+                "You can switch it back on from this window at any time.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            != QMessageBox.Yes
+        ):
+            return
+        self._change_source(alias, name, enabled=False)
+
+    def _on_switch_source_back_on(self, alias: str, name: str) -> None:
+        if self._privileged.repos_running or self._runner.is_running:
+            return
+        self._change_source(alias, name, enabled=True)
+
+    def _change_source(self, alias: str, name: str, enabled: bool) -> None:
+        self._banner_btn.setEnabled(False)
+        self._statusbar(f"Switching {name} {'back on' if enabled else 'off'}…")
+
+        def done(ok: bool, message: str) -> None:
+            self._privileged.reposFinished.disconnect(done)
+            if not ok:
+                self._banner_btn.setEnabled(True)
+                self._statusbar(f"Could not change {name}.")
+                QMessageBox.warning(
+                    self,
+                    f"Could not change {name}",
+                    f"{name} was left as it was.\n\n{message}",
+                )
+                return
+            remembered = set(self._settings.disabled_sources())
+            if enabled:
+                remembered.discard(alias)
+            else:
+                remembered.add(alias)
+            self._settings.set_disabled_sources(sorted(remembered))
+            self._statusbar(
+                f"{name} is now {'switched on' if enabled else 'switched off'}."
+            )
+            # Check again: the package list and the banner both depend on which
+            # sources are in use.
+            self._on_check_clicked()
+
+        self._privileged.reposFinished.connect(done)
+        if not self._privileged.set_repo_enabled(alias, enabled):
+            self._privileged.reposFinished.disconnect(done)
+            self._banner_btn.setEnabled(True)
 
     # -- settings -------------------------------------------------------- #
 

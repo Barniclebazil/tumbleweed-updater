@@ -29,7 +29,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
-from tumbleweed_updater import packagekit, sources, statusfile  # noqa: E402
+from tumbleweed_updater import packagekit, repos, sources, statusfile  # noqa: E402
 from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
 
 # PackageKit holding the zypp lock is the common case: it is D-Bus activated,
@@ -54,12 +54,13 @@ def _snapshots_ok() -> bool:
     return rpm.returncode == 0
 
 
-def _refresh() -> tuple[str | None, bool]:
+def _refresh() -> tuple[str | None, bool, str]:
     """Run ``zypper refresh``.
 
-    Returns ``(error_message, locked)``; ``locked`` is True only when the
+    Returns ``(error_message, locked, output)``. *locked* is True only when the
     failure was specifically a zypp lock conflict (exit code 7) - the one
-    case worth retrying automatically.
+    case worth retrying automatically. *output* is everything zypper printed,
+    which _failed_sources() below mines for the sources it could not reach.
     """
     try:
         proc = subprocess.run(
@@ -67,17 +68,45 @@ def _refresh() -> tuple[str | None, bool]:
             capture_output=True,
             text=True,
             timeout=600,
+            # The source names are recovered from this output by matching the
+            # "[alias|url]" token zypper prints. That token is the same in
+            # every language, but pinning the locale keeps the rest of the
+            # output predictable too, and costs nothing here: no human reads
+            # it, the window builds its own wording.
+            env={**os.environ, "LC_ALL": "C"},
         )
     except FileNotFoundError:
-        return "zypper is not installed", False
+        return "zypper is not installed", False, ""
     except subprocess.TimeoutExpired:
-        return "repository refresh timed out", False
+        return "repository refresh timed out", False, ""
+    output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout).strip()
         if not message:
             message = f"zypper refresh exited {proc.returncode}"
-        return message, proc.returncode == sources.ZYPPER_EXIT_ZYPP_LOCKED
-    return None, False
+        return message, proc.returncode == sources.ZYPPER_EXIT_ZYPP_LOCKED, output
+    return None, False, output
+
+
+def _failed_sources(refresh_output: str) -> list[tuple[str, str]]:
+    """Which software sources the refresh could not reach, as (alias, name).
+
+    Every alias is checked against the real source list before it is recorded,
+    so nothing the window later hands back to helper/repos can have been
+    invented by a stray line of output.
+    """
+    if not refresh_output.strip():
+        return []
+    listing = repos.list_repos()
+    if listing.error:
+        return []
+    aliases = repos.failed_aliases(refresh_output, [r.alias for r in listing.repos])
+    out = []
+    for alias in aliases:
+        repo = listing.by_alias(alias)
+        if repo is not None:
+            out.append((repo.alias, repo.label))
+    return out
 
 
 def main() -> int:
@@ -92,6 +121,7 @@ def main() -> int:
 
     attempts = 0
     refresh_error: str | None = None
+    refresh_output = ""
     zypper = sources.ZypperResult()
     still_locked = False
     lock_detail = ""
@@ -106,7 +136,7 @@ def main() -> int:
             _, lock_detail = packagekit.wait_for_lock(
                 timeout_s=packagekit.QUICK_WAIT_S
             )
-        refresh_error, refresh_locked = _refresh()
+        refresh_error, refresh_locked, refresh_output = _refresh()
         zypper = sources.check_zypper()
 
         still_locked = zypper.error is not None and (zypper.locked or refresh_locked)
@@ -116,6 +146,13 @@ def main() -> int:
 
     if zypper.error is None and refresh_error and not zypper.packages:
         zypper.error = f"repository refresh failed: {refresh_error}"
+
+    # Recorded whether or not the dry run found packages. When it did, this is
+    # the only trace of the failure that reaches the window: the error above is
+    # deliberately not set, because the upgrade can still go ahead without the
+    # source that is missing.
+    if refresh_error and not still_locked:
+        zypper.failed_repos = _failed_sources(refresh_output)
 
     # check_zypper() only sees its own exit code, so a lock that showed up in
     # the refresh alone would otherwise be lost. The GUI reads this to decide

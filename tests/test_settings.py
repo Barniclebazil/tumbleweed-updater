@@ -32,6 +32,12 @@ def isolated_config_home(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    # Setting these is not enough on its own: Qt resolves the config directory
+    # once per process and caches it, so every test after the first keeps
+    # writing to the first one's file. Tests that write before they read are
+    # unaffected, but anything checking a default has to start from a known
+    # state, so the keys that are not written by every test are cleared here.
+    SettingsStore().set_disabled_sources([])
 
 
 def test_dup_args_default_empty():
@@ -179,3 +185,45 @@ def test_packagekit_and_notifier_round_trip(app):
     loaded = store.load()
     assert loaded.wait_for_packagekit is False
     assert loaded.plasma_notifier_asked is True
+
+
+# --------------------------------------------------------------------------- #
+# Software sources this app switched off.
+#
+# Kept off Prefs on purpose: the settings dialog rebuilds Prefs field by field
+# from its widgets, so a field with no widget resets the day someone forgets to
+# carry it across. These tests pin the accessors down instead.
+# --------------------------------------------------------------------------- #
+
+
+def test_disabled_sources_default_to_none(app):
+    assert SettingsStore().disabled_sources() == []
+
+
+def test_disabled_sources_round_trip(app):
+    store = SettingsStore()
+    store.set_disabled_sources(["vlc", "packman"])
+    assert SettingsStore().disabled_sources() == ["packman", "vlc"]
+
+
+def test_a_single_disabled_source_reads_back_as_a_list(app):
+    """QSettings hands a one-element list back as a bare string on some
+    backends, which would otherwise be read as a list of characters."""
+    store = SettingsStore()
+    store.set_disabled_sources(["vlc"])
+    assert SettingsStore().disabled_sources() == ["vlc"]
+
+
+def test_disabled_sources_are_deduplicated(app):
+    store = SettingsStore()
+    store.set_disabled_sources(["vlc", "vlc", "packman"])
+    assert store.disabled_sources() == ["packman", "vlc"]
+
+
+def test_the_settings_dialog_cannot_clobber_the_disabled_sources(app):
+    """save() writes every Prefs field; this list is not one of them, so a
+    round trip through the dialog leaves it alone."""
+    store = SettingsStore()
+    store.set_disabled_sources(["vlc"])
+    store.save(Prefs())
+    assert store.disabled_sources() == ["vlc"]

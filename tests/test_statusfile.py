@@ -22,6 +22,7 @@ def _sample() -> UpdateStatus:
             space_diff=-512,
             need_reboot=True,
             locked=True,
+            failed_repos=[("vlc", "VLC")],
         ),
         flatpak=FlatpakResult(
             refs=[FlatpakRef("org.kde.Kdenlive", "24.12", "stable", "flathub", "user")]
@@ -109,3 +110,27 @@ def test_write_fixes_the_directory_mode_regardless_of_umask(tmp_path):
         assert oct(os.stat(target).st_mode & 0o777) == "0o644"
     finally:
         os.umask(old)
+
+
+def test_failed_repos_survive_the_round_trip(tmp_path):
+    path = os.path.join(tmp_path, "status.json")
+    statusfile.write(_sample(), path)
+    loaded = statusfile.read(path)
+    # JSON has no tuples, so the pairs travel as lists and come back as tuples.
+    assert loaded.zypper.failed_repos == [("vlc", "VLC")]
+
+
+def test_a_status_file_without_failed_repos_reads_as_empty():
+    """Added after SCHEMA 1 shipped, like "locked": an older file simply has no
+    such key, which is not an error."""
+    status = statusfile.from_dict({"zypper": {"packages": []}})
+    assert status.zypper.failed_repos == []
+
+
+def test_a_malformed_failed_repos_entry_is_skipped():
+    """read() folds every failure into None, so nothing here may raise on a
+    file written by some other version with a different shape."""
+    status = statusfile.from_dict(
+        {"zypper": {"failed_repos": [["vlc", "VLC"], "nonsense", ["only-one"], None]}}
+    )
+    assert status.zypper.failed_repos == [("vlc", "VLC")]

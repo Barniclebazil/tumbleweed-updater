@@ -10,6 +10,11 @@ Usage: run-update [--cleanup] [--no-wait-for-packagekit] [zypper dup options...]
     --cleanup                  run "zypper clean" after a successful upgrade
     --no-wait-for-packagekit   start even if PackageKit holds the package lock
 
+A software source that cannot be reached does not stop the upgrade. zypper
+skips it and carries on with the metadata already on disk (that is what its
+exit code 106 is for), so this script says which source went missing and then
+runs the dup anyway. Only a lock is fatal, because then nothing can run.
+
 Every option is checked against tumbleweed_updater.dupargs before zypper sees
 it: polkit matches only the path of this script, and the update action keeps
 its authorisation cached for a few minutes, so the arguments arrive untrusted
@@ -21,9 +26,12 @@ script does not touch snapshots.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pty
 import subprocess
 import sys
+import termios
 
 # Add the repository root when running from a checkout; see helper/check for why
 # this is guarded.
@@ -31,7 +39,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
-from tumbleweed_updater import packagekit  # noqa: E402
+from tumbleweed_updater import packagekit, repos, sources  # noqa: E402
 from tumbleweed_updater.dupargs import unknown_args  # noqa: E402
 
 # 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
@@ -46,6 +54,77 @@ def _heading(text: str) -> None:
 def _run(argv: list[str]) -> int:
     # Inherit stdin/stdout/stderr: they are the terminal the GUI is showing.
     return subprocess.call(argv)
+
+
+def _run_teed(argv: list[str]) -> tuple[int, str]:
+    """Run *argv* on a PTY, echoing its output live and keeping a copy.
+
+    The refresh output is needed twice: the user watches it go by, and
+    _missing_sources() reads it afterwards to name what could not be reached.
+
+    A plain pipe would satisfy the second and break the first in two ways.
+    zypper checks whether it is talking to a terminal, so it would drop its
+    colour and its progress line; and a prompt that ends without a newline -
+    "Do you want to reject the key, trust temporarily, or trust always?" is the
+    one that turns up during a refresh - would sit in the buffer unseen while
+    the app looked hung. So the child gets a real PTY, the same trick
+    tumbleweed_updater.pty_session uses for the dup itself, and this reads the
+    master end in whatever size chunks arrive.
+
+    stdin is left alone: it is still the terminal the GUI is showing, which is
+    what lets the user answer that prompt.
+    """
+    captured = bytearray()
+    master, slave = pty.openpty()
+    # Match the terminal we are attached to, so zypper wraps its output the way
+    # the user will see it.
+    try:
+        size = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, size)
+    except (OSError, ValueError):
+        pass  # not a terminal (a test, or output redirected): the default will do
+
+    try:
+        proc = subprocess.Popen(argv, stdout=slave, stderr=slave, close_fds=True)
+    except FileNotFoundError:
+        os.close(master)
+        os.close(slave)
+        return 127, ""
+    # The parent's copy has to go, or the master never sees EOF.
+    os.close(slave)
+
+    out = sys.stdout.buffer
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                # Linux raises EIO on the master once the last slave closes,
+                # which is this loop's normal way to end.
+                break
+            if not chunk:
+                break
+            out.write(chunk)
+            out.flush()
+            captured += chunk
+    finally:
+        os.close(master)
+    return proc.wait(), captured.decode("utf-8", "replace")
+
+
+def _missing_sources(refresh_output: str) -> list[str]:
+    """Display names of the software sources the refresh could not reach."""
+    listing = repos.list_repos()
+    if listing.error:
+        return []
+    names = []
+    for alias in repos.failed_aliases(
+        refresh_output, [r.alias for r in listing.repos]
+    ):
+        repo = listing.by_alias(alias)
+        if repo is not None:
+            names.append(repo.label)
+    return names
 
 
 def main() -> int:
@@ -98,10 +177,24 @@ def main() -> int:
             # anything printed here, and the user is watching a live terminal.
             _heading(detail)
 
-    _heading("Refreshing repositories")
-    rc = _run(["zypper", "refresh"])
-    if rc != 0:
+    _heading("Checking for new versions")
+    rc, refresh_output = _run_teed(["zypper", "refresh"])
+    if rc == sources.ZYPPER_EXIT_ZYPP_LOCKED:
+        # Nothing else can run either, so there is no point going on.
         return rc
+    if rc != 0:
+        # One unreachable source used to abort the whole upgrade here. It no
+        # longer does: zypper has already skipped it and everything else can
+        # still be installed from what is on disk.
+        missing = _missing_sources(refresh_output)
+        if missing:
+            _heading("Couldn't reach these software sources: " + ", ".join(missing))
+        else:
+            _heading("Couldn't reach some of your software sources")
+        _heading(
+            "Carrying on with everything else, using what's already on this "
+            "computer."
+        )
 
     _heading("zypper dup " + " ".join(args))
     rc = _run(["zypper", "dup", *args])

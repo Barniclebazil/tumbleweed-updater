@@ -122,6 +122,29 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   generated unit has `Restart=no`, and the override covers the next login anyway.
   Masking `packagekit.service` was considered and rejected: it breaks Discover's
   install/remove/repositories and `packagekit-offline-update.service`.
+* **`repos.py`** (Qt-free) is zypper's software sources: `list_repos()` parses
+  `zypper --xmlout repos --details` (which needs **no root**, so the GUI calls it
+  directly), `set_enabled()` wraps `zypper modifyrepo --disable/--enable`, and
+  `failed_aliases()` mines a failed `zypper refresh` for the sources it could
+  not reach. There is no machine-readable refresh output, so that last one
+  matches the `[alias|url]` token zypper prints, which is the same in every
+  language — the "Skipping repository 'VLC'" line carries the translated
+  *display name*, not the alias. Every alias it yields is checked against the
+  real source list before anything acts on it. **A source that cannot be
+  reached no longer stops an upgrade**: `helper/run-update` treats a failed
+  refresh as fatal only for exit 7 (lock), since zypper skips the source and
+  carries on from cached metadata otherwise — that is what its exit 106 means.
+  `helper/check` records the failures in `ZypperResult.failed_repos` even when
+  the dry run still found packages (it used to throw the message away in
+  exactly that case), and `MainWindow._render_banner()` turns them into plain
+  language: "software source", never "repository", and the display name, never
+  the alias. The banner's one button switches the source off via
+  `helper/repos`; `SettingsStore.disabled_sources()` remembers which sources
+  *this app* switched off, so the offer to switch one back on never appears for
+  the debug/source/installation-medium repos every system has disabled anyway.
+  `run-update` captures the refresh output through a **PTY**, not a pipe: on a
+  pipe zypper drops its colour and a prompt with no trailing newline (the GPG
+  key question) would sit unseen while the app looked hung.
 * **`snapshots.py`** is pure/stdlib-only (no Qt), parsing `snapper --jsonout
   list` (which nests snapshots under the config name, e.g. `{"root": [...]}`,
   and uses hyphenated keys like `pre-number`) and `snapper status <n1>..<n2>`
@@ -152,6 +175,11 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   arguments (`set-interval` against `intervals.py`, `run-update` against
   `dupargs.py`, both snapshot helpers against `int()`): the
   `exec.path` annotation pins the program, never its argv.
+* `snapshots-manage` and `repos` are both plain `auth_admin`. For `repos` the
+  reason is the `check` action above: it costs an active local session no
+  authentication at all, so a source change must not be able to ride anything
+  cached. Reading the source list is not a helper at all — `zypper repos` works
+  unprivileged.
 * `pkexec` refuses to run a helper that is not **root-owned and not
   world-writable**. That means the `pkexec` paths only work after
   `make install`; from a bare checkout the UI runs but "Check now" / "Update
@@ -184,8 +212,12 @@ as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
   `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py`, `packagekit.py`,
-  `autostart.py` must stay Qt-free (imported by the root helpers, or by both
-  the dialog and `app.py`).
+  `autostart.py`, `repos.py` must stay Qt-free (imported by the root helpers,
+  or by both the dialog and `app.py`).
+* Anything the user reads about a failure is written for someone who has never
+  heard of a repository: no "repository", "metadata", "refresh" or exit codes
+  in a banner or a dialog. zypper's own words stay untouched in the terminal
+  underneath, which is the record of what actually happened.
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog

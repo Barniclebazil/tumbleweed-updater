@@ -38,6 +38,12 @@ def to_dict(status: UpdateStatus) -> dict:
             # an older status file simply reads back as "not locked" and an
             # older reader ignores the key: no schema bump is needed.
             "locked": status.zypper.locked,
+            # Also added after SCHEMA 1, and read back with .get for the same
+            # reason. JSON has no tuples, so each pair travels as a two-element
+            # list and is turned back into one on the way in.
+            "failed_repos": [
+                [alias, name] for alias, name in status.zypper.failed_repos
+            ],
             "download_size": status.zypper.download_size,
             "space_diff": status.zypper.space_diff,
             "need_reboot": status.zypper.need_reboot,
@@ -75,6 +81,7 @@ def from_dict(data: dict) -> UpdateStatus:
     zres = ZypperResult(
         error=z.get("error"),
         locked=bool(z.get("locked", False)),
+        failed_repos=_repo_pairs(z.get("failed_repos")),
         download_size=int(z.get("download_size", 0) or 0),
         space_diff=int(z.get("space_diff", 0) or 0),
         need_reboot=bool(z.get("need_reboot", False)),
@@ -109,6 +116,21 @@ def from_dict(data: dict) -> UpdateStatus:
         generated=data.get("generated", ""),
         snapshots_ok=bool(data.get("snapshots_ok", True)),
     )
+
+
+def _repo_pairs(value: object) -> list[tuple[str, str]]:
+    """Read back the failed-source list, skipping anything malformed.
+
+    read() below folds every failure into None, so a status file written by a
+    newer version with a different shape here must not raise on the way in.
+    """
+    pairs: list[tuple[str, str]] = []
+    if not isinstance(value, list):
+        return pairs
+    for item in value:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            pairs.append((str(item[0]), str(item[1])))
+    return pairs
 
 
 def _action(value: str | None) -> Action:

@@ -47,6 +47,7 @@ def test_every_helper_path_constant_has_an_action():
         paths.HELPER_RUN_UPDATE,
         paths.HELPER_SNAPSHOTS,
         paths.HELPER_SNAPSHOTS_MANAGE,
+        paths.HELPER_REPOS,
     ):
         assert constant in declared, constant
 
@@ -59,6 +60,7 @@ def test_action_id_constants_match_the_policy():
         paths.ACTION_UPDATE,
         paths.ACTION_SNAPSHOTS,
         paths.ACTION_SNAPSHOTS_MANAGE,
+        paths.ACTION_REPOS,
     ):
         assert constant in ids, constant
 
@@ -74,6 +76,10 @@ def test_destructive_actions_do_not_cache_their_authorisation():
     """auth_admin_keep stays valid for minutes. Anything that changes the
     system irreversibly has to ask every time."""
     assert _allow_active(paths.ACTION_SNAPSHOTS_MANAGE) == "auth_admin"
+    # Switching a source off is reversible, but the check action costs an
+    # active session no authentication at all, so this must not be able to ride
+    # anything cached either.
+    assert _allow_active(paths.ACTION_REPOS) == "auth_admin"
     # The read-only ones may keep it: check changes nothing at all, and the
     # snapshots dialog re-lists after every operation.
     assert _allow_active(paths.ACTION_CHECK) == "yes"

@@ -25,6 +25,10 @@ HELPER_SNAPSHOTS = os.path.join(LIBEXEC_DIR, "snapshots")
 # so that they always prompt instead of riding the cached authorisation the
 # read-only listing keeps alive.
 HELPER_SNAPSHOTS_MANAGE = os.path.join(LIBEXEC_DIR, "snapshots-manage")
+# Switching a software source on or off. There is no read-side helper to go
+# with it: `zypper repos` works for an ordinary user, so the GUI lists them
+# itself and only comes here to change one.
+HELPER_REPOS = os.path.join(LIBEXEC_DIR, "repos")
 
 # When running straight from a source checkout (no RPM installed), the helpers
 # live next to the repo. resolve_helper() prefers the installed copy.
@@ -67,6 +71,7 @@ ACTION_SET_INTERVAL = "org.opensuse.tumbleweedupdater.set-interval"
 ACTION_UPDATE = "org.opensuse.tumbleweedupdater.update"
 ACTION_SNAPSHOTS = "org.opensuse.tumbleweedupdater.snapshots"
 ACTION_SNAPSHOTS_MANAGE = "org.opensuse.tumbleweedupdater.snapshots-manage"
+ACTION_REPOS = "org.opensuse.tumbleweedupdater.repos"
 
 # systemd unit that runs HELPER_CHECK on a timer.
 CHECK_TIMER = "tumbleweed-updater-check.timer"

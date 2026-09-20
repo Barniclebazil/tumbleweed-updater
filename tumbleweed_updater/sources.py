@@ -84,6 +84,12 @@ class ZypperResult:
     need_restart: bool = False
     error: str | None = None
     locked: bool = False
+    # Sources zypper could not reach during the refresh, as (alias, display
+    # name) pairs. Not an error: the dry run below still succeeds from the
+    # metadata already on disk, and the upgrade still runs. The window turns
+    # these into the "couldn't reach" warning; only the alias is ever passed
+    # back to a helper.
+    failed_repos: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def count(self) -> int:

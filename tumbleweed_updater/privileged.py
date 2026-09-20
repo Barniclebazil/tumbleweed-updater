@@ -11,6 +11,10 @@ Three helpers are called this way:
                      user.
 * ``snapshots-manage`` - roll back or delete a snapshot. A separate helper, and
                      a separate polkit action, so these prompt every time.
+* ``repos``        - switch a software source on or off. Needs admin auth, and
+                     prompts every time for the same reason. Listing sources is
+                     not here at all: ``zypper repos`` works unprivileged, so
+                     :mod:`tumbleweed_updater.repos` is called directly.
 
 The interactive ``run-update`` helper is *not* here: it is spawned straight onto
 the terminal's PTY by :mod:`tumbleweed_updater.runner` so the user can talk to
@@ -23,6 +27,7 @@ from PySide6.QtCore import QObject, QProcess, Signal
 
 from .paths import (
     HELPER_CHECK,
+    HELPER_REPOS,
     HELPER_SET_INTERVAL,
     HELPER_SNAPSHOTS,
     HELPER_SNAPSHOTS_MANAGE,
@@ -60,12 +65,14 @@ class PrivilegedRunner(QObject):
     checkFinished = Signal(bool, str)  # ok, message
     intervalFinished = Signal(bool, str)
     snapshotsFinished = Signal(bool, str, str)  # ok, message, stdout
+    reposFinished = Signal(bool, str)  # ok, message
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._check_proc: QProcess | None = None
         self._interval_proc: QProcess | None = None
         self._snapshots_proc: QProcess | None = None
+        self._repos_proc: QProcess | None = None
 
     @property
     def check_running(self) -> bool:
@@ -74,6 +81,10 @@ class PrivilegedRunner(QObject):
     @property
     def snapshots_running(self) -> bool:
         return self._snapshots_proc is not None
+
+    @property
+    def repos_running(self) -> bool:
+        return self._repos_proc is not None
 
     def run_check(self, wait_for_packagekit: bool = True) -> bool:
         """Start a check. False if one is already in flight.
@@ -117,6 +128,17 @@ class PrivilegedRunner(QObject):
                 "_snapshots_proc", self.snapshotsFinished, ok, msg, out
             ),
             capture_stdout=True,
+        )
+        return True
+
+    def set_repo_enabled(self, alias: str, enabled: bool) -> bool:
+        """Switch one software source on or off. False if one is already in
+        flight - callers must not then sit waiting for reposFinished."""
+        if self._repos_proc is not None:
+            return False
+        self._repos_proc = self._spawn(
+            [resolve_helper(HELPER_REPOS), "enable" if enabled else "disable", alias],
+            lambda ok, msg: self._done("_repos_proc", self.reposFinished, ok, msg),
         )
         return True
 

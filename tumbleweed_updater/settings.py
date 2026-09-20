@@ -184,6 +184,32 @@ class SettingsStore:
         s.setValue("ui/plasmaNotifierAsked", p.plasma_notifier_asked)
         s.sync()
 
+    # Software sources this app switched off, by zypper alias.
+    #
+    # Deliberately not a Prefs field: the settings dialog rebuilds Prefs field
+    # by field from its widgets, so anything without a widget has to be carried
+    # across by hand and resets silently the day someone forgets. This list is
+    # written from the main window, never from the dialog, so it gets its own
+    # pair of accessors instead.
+    #
+    # It exists so the window only offers to switch a source back on if this
+    # app is the reason it is off. Most systems have sources that were disabled
+    # on purpose long ago (the debug and source repositories, the installation
+    # medium), and nagging about those would be wrong.
+    def disabled_sources(self) -> list[str]:
+        value = self._s.value("sources/disabledByUs", [])
+        if isinstance(value, str):
+            # A one-element list comes back as a bare string on some backends.
+            return [value] if value else []
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value if str(v)]
+        return []
+
+    def set_disabled_sources(self, aliases: list[str]) -> None:
+        # Sorted and de-duplicated so the stored value does not churn.
+        self._s.setValue("sources/disabledByUs", sorted(set(aliases)))
+        self._s.sync()
+
 
 def _as_bool(value: object) -> bool:
     # QSettings round-trips bools as the strings "true"/"false" on some backends.
