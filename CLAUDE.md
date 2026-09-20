@@ -65,9 +65,25 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `helper/run-update` will accept, shared with `settingsdialog.py` so the dialog
   can reject an option before it is saved rather than at update time.
 * **`icons.py`** renders each tray/window icon from one monochrome SVG in
-  `data/icons/styles/<name>.svg` (`currentColor` stroke): idle → palette text
-  colour, "updates" → openSUSE orange. Style list is `settings.ICON_STYLES`.
-  Changing it in the dialog → `MainWindow.settingsApplied` → `app` → `tray.reload()`.
+  `data/icons/styles/<name>.svg` (`currentColor` stroke). **Tray**: idle →
+  palette text colour so it follows the theme, "updates" → `#f67400`, which is
+  Breeze's orange and not openSUSE's, chosen to stand out in a panel.
+  **Window, task manager, task switcher** (`window_icon()`): openSUSE green
+  `#73ba25`. **Window, task manager, task switcher** (`window_icon(style)`):
+  the same thing the tray shows when idle, so it is white on a dark theme and
+  dark on a light one. That is only true because `App._refresh_app_icon()`
+  rebuilds it on `styleHints().colorSchemeChanged`, as `tray.py` does for
+  itself — a palette read once at startup is a colour, not a theme. Verified on
+  this machine that the title bar follows it: the session is Wayland, KWin
+  advertises `xdg_toplevel_icon_manager_v1` and Qt 6.11 implements it, so
+  `setWindowIcon()` is what the decoration draws rather than the desktop file.
+  The **launcher entry** is the exception, `data/icons/tumbleweed-updater.svg`,
+  which carries a literal `#73ba25` rather than `currentColor`: the launcher is
+  handed that file as it is, there is no runtime to tint it in, and
+  `currentColor` with nothing to inherit from resolves to black, which is what
+  once put a black mark in Kickoff. Style list is `settings.ICON_STYLES`.
+  Changing it in the dialog → `MainWindow.settingsApplied` → `app` →
+  `tray.reload()` + `MainWindow.reload_icon()`.
 * **Update options** — `settings.dup_args_from_prefs()` turns the "Update
   behaviour" toggles into `zypper dup` args (`-y --auto-agree-with-licenses`,
   `--allow-vendor-change`, `--download in-advance`) plus the free-text field,
@@ -131,17 +147,93 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   language — the "Skipping repository 'VLC'" line carries the translated
   *display name*, not the alias. Every alias it yields is checked against the
   real source list before anything acts on it. **A source that cannot be
-  reached no longer stops an upgrade**: `helper/run-update` treats a failed
-  refresh as fatal only for exit 7 (lock), since zypper skips the source and
-  carries on from cached metadata otherwise — that is what its exit 106 means.
+  reached does not stop `helper/run-update`**: it treats a failed refresh as
+  fatal only for exit 7 (lock) and runs the dup regardless. Whether the *dup*
+  then runs is zypper's call, and measured behaviour splits in two: with usable
+  metadata for the missing source still on disk it upgrades normally, and with
+  none it refuses outright (exit 4, "dist-upgrade … must not continue if
+  enabled repositories fail to refresh … If a failing repository is actually
+  not needed, it must be disabled"). `--no-refresh` does not get round it. So
+  nothing here promises the other updates will install: `_stopped_by()` turns
+  that refusal into one plain line naming the source and the button, and the
+  banner says "were checked as usual", not "can still be installed". It also
+  **no longer offers to switch a source off for good**, which was a trap: on a
+  real machine, switching off the source 14 installed packages came from left
+  every one of them orphaned, so the next `dup --dry-run` got a solver question
+  per orphan, answered none (it is `--non-interactive`), and computed nothing
+  at all — the window read "Could not check for system updates" with no route
+  back but the opposite button. Whatever the banner offers has to be
+  reversible, so it offers the upgrade instead.
+  **`run-update --without-unreachable`** takes zypper's advice for the length
+  of one upgrade: switch the source off, dup, switch it back on
+  (`_upgrade_without()`). `MainWindow._ask_about_unreachable_sources()` offers
+  it from "Update now" — leave it out just this once / try anyway / cancel —
+  and the banner's own button (`_on_update_without_unreachable()`) takes the
+  same route without asking, its label having said so already. The GUI passes
+  only the flag, never an alias: which sources are
+  unreachable is worked out by the helper, as root, from its own refresh. Two
+  things guard it. A note under `/var/lib/tumbleweed-updater/`
+  (`repos.remember_to_restore()`, written before anything is touched) that
+  `helper/check` acts on at the start of its next run, for the endings the
+  helper does not live to see; `/run` would be wrong here, since the point is
+  to survive a reboot. And a dry run, because leaving a source out orphans
+  everything installed from it and `man zypper` is explicit that dist-upgrade
+  "removes orphaned packages if they prevent the upgrade of wanted packages" —
+  without asking, since the default options include `-y`. So `_extra_removals()`
+  compares the plan against the one the user was shown (the status file) and
+  stops if it has grown, or if the second dry run could not answer — which on
+  this machine is the orphaned-package case above, and
+  `sources.parse_zypper_dup_xml()` has already turned that into a sentence
+  (`_NEEDS_A_DECISION`, triggered by a `<prompt>` with no `<install-summary>`:
+  the element name is not translated, its text is). `_split_own_options()` strips this helper's own flags
+  off the front, and only off the front, so a later `--cleanup` is still
+  refused by `dupargs`.
   `helper/check` records the failures in `ZypperResult.failed_repos` even when
   the dry run still found packages (it used to throw the message away in
-  exactly that case), and `MainWindow._render_banner()` turns them into plain
+  exactly that case) — and note that its dry run uses `--no-refresh`, so it can
+  list packages that the real dup will then refuse to install.
+  `MainWindow._render_banner()` turns the failures into plain
   language: "software source", never "repository", and the display name, never
   the alias. The banner's one button switches the source off via
   `helper/repos`; `SettingsStore.disabled_sources()` remembers which sources
   *this app* switched off, so the offer to switch one back on never appears for
   the debug/source/installation-medium repos every system has disabled anyway.
+  Nothing writes to that list any more (see above) — it is kept for anyone who
+  pressed the old button, since `_on_switch_source_back_on()` is their whole
+  way back. When the banner offers "Update without X" it sets
+  `_banner_offers_leave_out`, and `_update_buttons()` relabels the window's own
+  button "Update with X anyway" (which then runs without asking, since the
+  label already answered). Neither is greyed out: keeping the source in is the
+  route that works while zypper still has usable details for it on disk, and
+  the app cannot tell in advance which case it is in.
+  `_ask_about_unreachable_sources()` still runs when the banner's one button
+  went to something else, a held lock in particular. Beside it sits a second
+  banner button, **"Try again tomorrow"** (`_banner_btn_alt`), for the case the
+  banner's own last sentence recommends: the source is usually somebody else's
+  server having a bad afternoon and there is nothing useful to do until it is
+  back. It stores tomorrow's date in `SettingsStore.set_deferred_until()`, and
+  while that is in force the headline reads "Update check deferred until
+  dd/mm/yyyy", `_emit_state()` emits `TrayState.IDLE` so the icon stops looking
+  like there is something to attend to, `app._should_notify()` stays quiet, and
+  the banner shrinks to one line with no buttons. Three things end it: "Check
+  now" (`_on_check_clicked()` clears it, which covers the tray menu and the
+  re-checks after a run), a check that comes back with no error and no failed
+  sources (`apply_zypper_status()` — nothing to hide from any more), and the
+  date arriving, which `deferred_until()` notices and tidies away on the next
+  read. Everything else the banner says is unaffected: a failed check, a held
+  lock and a missing snapshot plugin are real problems, not what was put off.
+  The banner itself is **not orange** for this (`_BANNER_STYLES["plain"]`):
+  one rule now, orange for something wrong with this computer, the window's own
+  text for everything else. `_render_banner()` sets `problem` for a failed
+  check, a held lock and a missing snapshot plugin, and deliberately not for an
+  unreachable source or a source the user switched off themselves.
+  That button is greyed out (`MainWindow._update_banner_button()`) while a
+  check, an update or another source change is running: a check starts by
+  itself as soon as an update finishes and holds zypp's lock for half a minute,
+  and `zypper modifyrepo` arriving in that window came back with zypper's own
+  "Close this application before trying again", which reads as the app being
+  broken. `repos.set_enabled()` replaces that message for exit 7 anyway, since
+  the systemd timer's check can hold the lock without the GUI knowing.
   `run-update` captures the refresh output through a **PTY**, not a pipe: on a
   pipe zypper drops its colour and a prompt with no trailing newline (the GPG
   key question) would sit unseen while the app looked hung.
@@ -174,7 +266,11 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   destroy a snapshot. For the same reason the helpers validate their own
   arguments (`set-interval` against `intervals.py`, `run-update` against
   `dupargs.py`, both snapshot helpers against `int()`): the
-  `exec.path` annotation pins the program, never its argv.
+  `exec.path` annotation pins the program, never its argv. `check` is also the
+  only helper that changes a source without its own polkit action — it puts
+  back one an interrupted `run-update` left off — which is safe because it can
+  only ever *enable*, only from a root-owned note under `/var/lib`, and only
+  for an alias that is still in the real source list.
 * `snapshots-manage` and `repos` are both plain `auth_admin`. For `repos` the
   reason is the `check` action above: it costs an active local session no
   authentication at all, so a source change must not be able to ride anything

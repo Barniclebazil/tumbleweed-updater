@@ -3,10 +3,17 @@
 
 Runs as root (via pkexec / the systemd timer):
 
-1. refresh zypper repositories,
-2. compute a dry-run distribution upgrade,
-3. note whether snapshot support is present,
-4. write the result to the status file the GUI watches.
+1. put back any software source an interrupted upgrade left switched off,
+2. refresh zypper repositories,
+3. compute a dry-run distribution upgrade,
+4. note whether snapshot support is present,
+5. write the result to the status file the GUI watches.
+
+Step 1 is the crash net for ``run-update --without-unreachable``, which
+switches an unreachable source off for the length of one upgrade. Its own
+finally block covers every ending it lives to see; this covers the ones it does
+not. It has to come before the refresh, or the refresh would report on a set of
+sources the user never chose.
 
 It never installs anything.
 """
@@ -118,6 +125,18 @@ def main() -> int:
             "check: refusing unrecognised option(s): " + " ".join(unknown) + "\n"
         )
         return 2
+
+    # Before anything else asks zypper a question. If an upgrade was cut short
+    # while it had a source switched off for its own use, this puts the source
+    # back, and the refresh below then sees the real set. Ordinarily there is
+    # no note to act on and this costs one failed open().
+    restored = repos.restore_remembered()
+    if restored:
+        sys.stderr.write(
+            "check: switched back on after an interrupted upgrade: "
+            + ", ".join(restored)
+            + "\n"
+        )
 
     attempts = 0
     refresh_error: str | None = None

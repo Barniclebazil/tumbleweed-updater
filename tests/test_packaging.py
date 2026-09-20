@@ -84,3 +84,25 @@ def test_destructive_actions_do_not_cache_their_authorisation():
     # snapshots dialog re-lists after every operation.
     assert _allow_active(paths.ACTION_CHECK) == "yes"
     assert _allow_active(paths.ACTION_SNAPSHOTS) == "auth_admin_keep"
+
+
+def test_the_installer_puts_the_package_under_prefix():
+    """A bare sysconfig.get_path("purelib") answers with the user-local tree,
+    /usr/local/lib/..., wherever PREFIX points. That directory sits *after*
+    /usr/lib/... on sys.path, so an install there is shadowed by whatever the
+    RPM left behind and quietly changes nothing. Caught the hard way: a
+    make install reported success while the running app kept the old code."""
+    import subprocess
+
+    line = next(
+        l for l in INSTALL_SH.read_text().splitlines() if l.startswith("SITELIB=")
+    )
+    for prefix in ("/usr", "/opt/somewhere"):
+        sitelib = subprocess.run(
+            ["sh", "-c", f'PREFIX={prefix}\n{line}\nprintf %s "$SITELIB"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert sitelib.startswith(prefix + "/"), sitelib
+        assert "/local/" not in sitelib, sitelib

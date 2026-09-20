@@ -6,14 +6,31 @@ embedded terminal so the user answers zypper's prompts directly. The child
 processes inherit this process's terminal, which is what keeps zypper
 interactive and coloured.
 
-Usage: run-update [--cleanup] [--no-wait-for-packagekit] [zypper dup options...]
+Usage: run-update [options] [zypper dup options...]
     --cleanup                  run "zypper clean" after a successful upgrade
     --no-wait-for-packagekit   start even if PackageKit holds the package lock
+    --without-unreachable      switch off any software source that cannot be
+                               reached, run the upgrade, and switch it back on
 
-A software source that cannot be reached does not stop the upgrade. zypper
-skips it and carries on with the metadata already on disk (that is what its
-exit code 106 is for), so this script says which source went missing and then
-runs the dup anyway. Only a lock is fatal, because then nothing can run.
+A software source that cannot be reached is not treated as fatal here: zypper
+skips it and carries on with the metadata already on disk, so this script says
+which source went missing and then runs the dup anyway. Only a lock is fatal
+before that point, because then nothing can run at all.
+
+Whether the dup then *succeeds* is zypper's call, not ours. It carries on if it
+still has usable metadata for the missing source, and refuses outright if it
+does not - dist-upgrade is the one command that will not run against an
+incomplete set of repositories ("If a failing repository is actually not
+needed, it must be disabled"). That refusal is reported in plain language at
+the end, since by then the user has watched a screen of zypper's own
+explanation go by and needs to know only that switching the source off is the
+way past it.
+
+``--without-unreachable`` takes zypper's advice on the user's behalf, for one
+upgrade: switch the source off, run the dup, switch it back on. The GUI asks
+before passing it and passes nothing else - which sources are unreachable is
+worked out here, as root, from this script's own refresh, never from an
+argument. See _upgrade_without() for the two things that guard it.
 
 Every option is checked against tumbleweed_updater.dupargs before zypper sees
 it: polkit matches only the path of this script, and the update action keeps
@@ -29,6 +46,7 @@ from __future__ import annotations
 import fcntl
 import os
 import pty
+import signal
 import subprocess
 import sys
 import termios
@@ -39,7 +57,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
-from tumbleweed_updater import packagekit, repos, sources  # noqa: E402
+from tumbleweed_updater import packagekit, repos, sources, statusfile  # noqa: E402
 from tumbleweed_updater.dupargs import unknown_args  # noqa: E402
 
 # 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
@@ -112,33 +130,192 @@ def _run_teed(argv: list[str]) -> tuple[int, str]:
     return proc.wait(), captured.decode("utf-8", "replace")
 
 
-def _missing_sources(refresh_output: str) -> list[str]:
-    """Display names of the software sources the refresh could not reach."""
+def _missing_sources(refresh_output: str) -> list[tuple[str, str]]:
+    """The software sources the refresh could not reach, as (alias, name).
+
+    Both halves are wanted: the name for anything the user reads, the alias for
+    anything zypper is told. Every alias comes from the real source list, so
+    nothing invented by a stray line of output can reach a command line - which
+    matters more here than in the window, because this runs as root.
+
+    Only sources that are currently switched *on* are returned. One the user
+    already switched off is not in the way of anything and must not be switched
+    back on at the end.
+    """
     listing = repos.list_repos()
     if listing.error:
         return []
-    names = []
+    found = []
     for alias in repos.failed_aliases(
         refresh_output, [r.alias for r in listing.repos]
     ):
         repo = listing.by_alias(alias)
-        if repo is not None:
-            names.append(repo.label)
-    return names
+        if repo is not None and repo.enabled:
+            found.append((repo.alias, repo.label))
+    return found
+
+
+def _stopped_by(missing: list[str]) -> str:
+    """What to say when the dup failed and a source could not be reached.
+
+    Not a diagnosis - the dup can fail for its own reasons, and zypper's own
+    output is right above this line either way. It is the one thing the user
+    can act on, and the app's window has the button for it.
+    """
+    if len(missing) == 1:
+        return (
+            f"The upgrade didn't run. {missing[0]} couldn't be reached, and "
+            f"the upgrade won't go ahead without it. Switch {missing[0]} off "
+            "in the window above, or try again when it is back."
+        )
+    names = ", ".join(missing)
+    return (
+        f"The upgrade didn't run. These couldn't be reached: {names}. The "
+        "upgrade won't go ahead without them, so switch them off, or try "
+        "again when they are back."
+    )
+
+
+def _upgrade(args: list[str]) -> int:
+    _heading("zypper dup " + " ".join(args))
+    return _run(["zypper", "dup", *args])
+
+
+def _removals(result) -> set[str]:
+    """Names of the packages a dry run says would be removed."""
+    return {p.name for p in result.packages if p.action is sources.Action.REMOVE}
+
+
+def _planned_removals() -> set[str] | None:
+    """What the user was last shown as going away, or None if not known.
+
+    The status file is the list in the window the user pressed the button in,
+    so it is the right thing to compare against and costs nothing to read. When
+    it is missing - a first run, or /run cleared by a reboot - the baseline is
+    worked out here instead, which is another dry run and another half minute.
+    """
+    status = statusfile.read()
+    if status is not None and status.zypper.packages:
+        return _removals(status.zypper)
+    baseline = sources.check_zypper()
+    if baseline.error:
+        return None
+    return _removals(baseline)
+
+
+def _extra_removals(before: set[str] | None) -> tuple[list[str], str | None]:
+    """Packages leaving the sources out would additionally remove.
+
+    Returns ``(extra, why_not)``. *why_not* is set when the question could not
+    be answered at all, which stops the upgrade just as a long list would: the
+    whole point of asking is not to change anything behind the user's back.
+
+    The common reason for not being able to answer is the very thing being
+    guarded against. With the source out, everything installed from it is an
+    orphan, and zypper asks what to do with each one rather than computing a
+    plan - which sources.parse_zypper_dup_xml() turns into a sentence about
+    programs from a source that is switched off. That sentence is exactly what
+    the user needs, so it is passed straight through.
+    """
+    if before is None:
+        return [], (
+            "Couldn\u2019t work out what this computer already has installed."
+        )
+    after = sources.check_zypper()
+    if after.error:
+        return [], after.error
+    return sorted(_removals(after) - before), None
+
+
+def _would_also_remove(names: list[str], extra: list[str]) -> str:
+    """Why the upgrade was not run after all, in plain language."""
+    one_source = len(names) == 1
+    source = names[0] if one_source else "those software sources"
+    reached = "it can be reached" if one_source else "they can be reached"
+    switch = "switch it off" if one_source else "switch them off"
+    listed = ", ".join(extra[:5]) + (", and others" if len(extra) > 5 else "")
+    count = "1 program" if len(extra) == 1 else f"{len(extra)} programs"
+    return (
+        f"Leaving {source} out would also remove {count} you already have "
+        f"installed ({listed}). That is not a safe way round the problem, so "
+        f"nothing was changed. Try again when {reached}, or {switch} yourself "
+        "if you no longer want the software from it."
+    )
+
+
+def _upgrade_without(missing: list[tuple[str, str]], args: list[str]) -> int:
+    """Run the dup with the unreachable sources switched off, then put them back.
+
+    This is zypper's own advice for the situation ("If a failing repository is
+    actually not needed, it must be disabled"), with the disabling undone the
+    moment the upgrade is over, so the user's machine is the same afterwards as
+    it was before.
+
+    Two things guard it. A note on disk written before anything is touched, so
+    that helper/check can finish the job if this process never gets to (see
+    repos.restore_remembered); and the dry run below, because a source left out
+    makes everything installed from it an orphan, and zypper removes orphans
+    that stand in the way of an upgrade - without asking, since the app's
+    default options include -y.
+    """
+    aliases = [alias for alias, _name in missing]
+    names = [name for _alias, name in missing]
+    listed = names[0] if len(names) == 1 else ", ".join(names)
+
+    before = _planned_removals()
+
+    _heading(f"Leaving {listed} out of this update")
+    repos.remember_to_restore(aliases)
+    try:
+        for alias in aliases:
+            error = repos.set_enabled(alias, enabled=False)
+            if error:
+                _heading(f"Couldn't leave {listed} out: {error}")
+                return 1
+
+        _heading("Checking that nothing else would be removed")
+        extra, why_not = _extra_removals(before)
+        if why_not:
+            _heading(why_not)
+            _heading(f"Nothing was changed, and {listed} has been put back.")
+            return 1
+        if extra:
+            _heading(_would_also_remove(names, extra))
+            return 1
+
+        return _upgrade(args)
+    finally:
+        # Reached by every ending this process sees, including the Ctrl-C the
+        # Cancel button sends and the SystemExit raised by the SIGTERM handler.
+        _heading(f"Putting {listed} back")
+        for alias in aliases:
+            error = repos.set_enabled(alias, enabled=True)
+            if error:
+                _heading(f"Couldn't put {listed} back: {error}")
+        repos.forget_to_restore()
+
+
+# Options this script owns, stripped off the front before the rest is handed to
+# dupargs, so that the allow-list only ever sees things it is meant to judge.
+# Matched as exact strings and only while they lead, since polkit pins the path
+# of this script and nothing about its arguments.
+_OWN_OPTIONS = ("--cleanup", "--no-wait-for-packagekit", "--without-unreachable")
+
+
+def _split_own_options(args: list[str]) -> tuple[set[str], list[str]]:
+    """Leading options of ours, and everything left for zypper dup."""
+    mine: set[str] = set()
+    rest = list(args)
+    while rest and rest[0] in _OWN_OPTIONS:
+        mine.add(rest.pop(0))
+    return mine, rest
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    # Our own options are stripped before the allow-list check, so that
-    # dupargs only ever sees things it is meant to judge.
-    cleanup = False
-    if args and args[0] == "--cleanup":
-        cleanup = True
-        args = args[1:]
-    wait_for_pk = True
-    if args and args[0] == "--no-wait-for-packagekit":
-        wait_for_pk = False
-        args = args[1:]
+    mine, args = _split_own_options(sys.argv[1:])
+    cleanup = "--cleanup" in mine
+    wait_for_pk = "--no-wait-for-packagekit" not in mine
+    without_unreachable = "--without-unreachable" in mine
 
     rejected = unknown_args(args)
     if rejected:
@@ -182,22 +359,32 @@ def main() -> int:
     if rc == sources.ZYPPER_EXIT_ZYPP_LOCKED:
         # Nothing else can run either, so there is no point going on.
         return rc
+    missing: list[tuple[str, str]] = []
     if rc != 0:
         # One unreachable source used to abort the whole upgrade here. It no
         # longer does: zypper has already skipped it and everything else can
-        # still be installed from what is on disk.
+        # still be installed from what is on disk - when what is on disk is
+        # still usable. If it is not, either the user asked for the source to
+        # be left out (below) or the dup refuses and _stopped_by() translates
+        # the refusal.
         missing = _missing_sources(refresh_output)
-        if missing:
-            _heading("Couldn't reach these software sources: " + ", ".join(missing))
+        names = [name for _alias, name in missing]
+        if names:
+            _heading("Couldn't reach these software sources: " + ", ".join(names))
         else:
             _heading("Couldn't reach some of your software sources")
-        _heading(
-            "Carrying on with everything else, using what's already on this "
-            "computer."
-        )
+        if not (without_unreachable and missing):
+            _heading(
+                "Trying the upgrade anyway, with what's already on this "
+                "computer."
+            )
 
-    _heading("zypper dup " + " ".join(args))
-    rc = _run(["zypper", "dup", *args])
+    if without_unreachable and missing:
+        rc = _upgrade_without(missing, args)
+    else:
+        rc = _upgrade(args)
+        if rc not in _OK_EXITS and missing:
+            _heading(_stopped_by([name for _alias, name in missing]))
     if rc not in _OK_EXITS:
         return rc
 
@@ -208,5 +395,18 @@ def main() -> int:
     return 0
 
 
+def _exit_on_sigterm(_signum, _frame) -> None:
+    """Turn a SIGTERM into an ordinary unwind.
+
+    Default handling would kill this process outright, and _upgrade_without()'s
+    finally block would never run: a source switched off for the upgrade would
+    stay off until helper/check noticed the note on disk. Ctrl-C, which is what
+    the Cancel button actually sends, already arrives as KeyboardInterrupt and
+    needs nothing.
+    """
+    raise SystemExit(143)  # 128 + SIGTERM, the shell's convention
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     sys.exit(main())

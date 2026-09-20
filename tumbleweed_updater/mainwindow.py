@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import partial
 
 from PySide6.QtCore import QProcess, Qt, Signal
@@ -36,15 +36,17 @@ from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
 from .workers import FlatpakChecker, LockWaiter
 
-# Two looks for the one banner. Orange for something wrong, and a quiet
-# palette-coloured note for a statement of fact ("VLC is switched off"), which
-# would be alarming in orange. The neutral one is built from palette roles so
-# it follows the Plasma theme in both light and dark.
+# Two looks for the one banner, and the rule for choosing is whether something
+# is wrong with this computer. Orange says so. Everything else - a statement of
+# fact like "VLC is switched off", and a source that cannot be reached at the
+# moment - is written in the window's own text, because an orange bar tells a
+# user their machine is in trouble when it is not.
 #
-# The rules are scoped by object name because a plain "background: ..." on the
-# banner cascades into the button inside it, which then loses every trace of
-# being a button and reads as a line of text. Hence the explicit button rules
-# in both variants.
+# The warning rules are scoped by object name because a plain "background: ..."
+# on the banner cascades into the button inside it, which then loses every
+# trace of being a button and reads as a line of text. The plain variant wants
+# exactly that cascade to stay out of the way, so it sets nothing but the
+# background and lets the button keep the theme's own look.
 _BANNER_STYLES = {
     "warning": """
         #banner { background: #f67400; color: white; border-radius: 4px; }
@@ -61,23 +63,25 @@ _BANNER_STYLES = {
             border-color: rgba(255, 255, 255, 0.3);
         }
     """,
-    "neutral": """
-        #banner {
-            background: palette(alternate-base);
-            color: palette(text);
-            border: 1px solid palette(mid);
-            border-radius: 4px;
-        }
-        #banner QPushButton {
-            background: palette(button);
-            color: palette(button-text);
-            border: 1px solid palette(mid);
-            border-radius: 3px;
-            padding: 4px 12px;
-        }
-        #banner QPushButton:hover { background: palette(midlight); }
+    # No box, no colour, nothing overridden: the text sits in the window like
+    # any other sentence and the button keeps the theme's own look. This is
+    # what a software source being briefly unreachable gets. It is somebody
+    # else's server having a bad day, the update has a way round it, and
+    # dressing that up as an alert is what made a routine problem look like a
+    # broken computer.
+    "plain": """
+        #banner { background: transparent; color: palette(text); }
     """,
 }
+
+# Room around the orange box; the plain text lines up with the headline above
+# it instead.
+_BANNER_MARGINS = {"warning": (8, 6, 8, 6), "plain": (0, 2, 0, 2)}
+
+# The window's own update button when there is nothing special to say. It is
+# relabelled while the banner is offering the other half of the choice; see
+# _update_buttons().
+_UPDATE_BUTTON_TEXT = "Update now…"
 
 _ACTION_LABELS = {
     Action.UPGRADE: "upgrade",
@@ -90,38 +94,75 @@ _ACTION_LABELS = {
 
 
 def _missing_sources_text(failed: list[tuple[str, str]], total: int) -> str:
-    """The warning for software sources that could not be reached.
+    """The notice for software sources that could not be reached.
 
-    Written for someone who has never heard of a repository: it says what was
-    left out, that the rest still works, what happens to the programs that came
-    from the missing source, and that it is probably not their problem to fix.
-    The user sees the source's display name; the alias stays internal.
+    Written for someone who has never heard of a repository: what happened,
+    what it means for the programs that came from the source, and that it is
+    probably not their problem to fix. The user sees the source's display name;
+    the alias stays internal.
+
+    It says the source was left out "when checking for updates", which is the
+    literal truth and was not what this used to claim. Nothing has been left
+    out of an *update* at this point: no update has run. The check refreshed
+    every source, this one failed, zypper skipped it, and the dry run then
+    counted what the rest had to offer.
+
+    Nor does it promise the rest "can still be installed", which it did once.
+    That is true only while zypper still has usable details for the missing
+    source on disk. Once those go stale it refuses the upgrade outright - dup
+    is the one command that will not run against an incomplete set of sources,
+    and it says so itself: "If a failing repository is actually not needed, it
+    must be disabled." The way past that is the button beside this text.
     """
     names = [name for _alias, name in failed]
     if len(names) == 1:
         opening = (
-            f'Couldn\u2019t reach the software source "{names[0]}", so it has '
-            "been left out."
+            "This application could not reach the software source "
+            f'"{names[0]}", so that source was left out when checking for '
+            "updates."
         )
-        theirs = f"Programs you got from {names[0]}"
-        again = "until it can be reached again"
+        theirs = "that software source"
+        again = "the software source can be reached again"
     else:
         opening = (
-            f"Couldn\u2019t reach {len(names)} of your software sources "
-            f"({', '.join(names)}), so they have been left out."
+            f"This application could not reach {len(names)} of your software "
+            f"sources ({', '.join(names)}), so those sources were left out "
+            "when checking for updates."
         )
-        theirs = "Programs you got from them"
-        again = "until they can be reached again"
+        theirs = "those software sources"
+        again = "the software sources can be reached again"
     rest = (
-        f"The other {total} updates can still be installed."
+        f"The other {total} updates were checked as usual."
         if total
         else "Everything else was checked as usual."
     )
     return (
-        f"{opening} {rest} {theirs} keep working, they just won\u2019t get new "
-        f"versions {again}. This is usually a temporary problem at the other "
-        "end, so it is worth trying again tomorrow."
+        f"{opening} {rest} Programs you have installed from {theirs} keep "
+        f"working, however they will not get updates until {again}. This is "
+        "usually a temporary problem at the other end, so it is worth trying "
+        "again tomorrow."
     )
+
+
+def _day(day) -> str:
+    """A date the way the user writes one."""
+    return day.strftime("%d/%m/%Y")
+
+
+def _deferred_sources_text(failed: list[tuple[str, str]], day) -> str:
+    """The banner while the check is deferred: one line, no buttons.
+
+    The full explanation is the right thing to read once and the wrong thing to
+    keep reading after deciding to ignore it. The headline carries the date as
+    well; this says which source it was about.
+    """
+    names = [name for _alias, name in failed]
+    subject = (
+        names[0]
+        if len(names) == 1
+        else f"{len(names)} of your software sources ({', '.join(names)})"
+    )
+    return f"{subject} could not be reached. This was put off until {_day(day)}."
 
 
 def _relative_time(iso: str) -> str:
@@ -161,6 +202,9 @@ class MainWindow(QMainWindow):
         self._privileged = privileged
         self._status = UpdateStatus()
         self._flatpak_checked = False
+        # Set for real by _render_banner(); needed before that, because
+        # _build_ui() reaches _update_buttons() through _set_running().
+        self._banner_offers_leave_out = False
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(window_icon(self._settings.load().icon_style))
@@ -222,7 +266,8 @@ class MainWindow(QMainWindow):
         # now, and a button sitting at the end of a wrapped paragraph reads as
         # part of the sentence rather than as something to press.
         banner_l = QVBoxLayout(self._banner)
-        banner_l.setContentsMargins(8, 6, 8, 6)
+        self._banner_layout = banner_l
+        banner_l.setContentsMargins(*_BANNER_MARGINS["warning"])
         banner_l.setSpacing(6)
         self._banner_label = QLabel()
         self._banner_label.setWordWrap(True)
@@ -231,15 +276,22 @@ class MainWindow(QMainWindow):
         for label in (self._headline, self._subline, self._banner_label):
             label.setTextFormat(Qt.PlainText)
         banner_l.addWidget(self._banner_label)
-        # The button's label and job both depend on what the banner is saying,
-        # so it is wired once to a dispatcher and _show_banner() sets the rest.
+        # Both buttons' labels and jobs depend on what the banner is saying, so
+        # each is wired once to a dispatcher and _show_banner() sets the rest.
+        # The alternative sits to the *left* of the primary one, the way a
+        # dialog puts its lesser choice there.
         self._banner_btn = QPushButton()
         self._banner_action = None
         self._banner_btn.clicked.connect(self._on_banner_button)
         self._banner_btn.hide()
+        self._banner_btn_alt = QPushButton()
+        self._banner_alt_action = None
+        self._banner_btn_alt.clicked.connect(self._on_banner_alt_button)
+        self._banner_btn_alt.hide()
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.addStretch(1)
+        btn_row.addWidget(self._banner_btn_alt)
         btn_row.addWidget(self._banner_btn)
         banner_l.addLayout(btn_row)
         self._banner.hide()
@@ -302,9 +354,9 @@ class MainWindow(QMainWindow):
         self._progress.setRange(0, 0)
         self._progress.setMaximumWidth(140)
         self._progress.hide()
-        self._btn_update = QPushButton("Update now…")
+        self._btn_update = QPushButton(_UPDATE_BUTTON_TEXT)
         self._btn_update.setDefault(True)
-        self._btn_update.clicked.connect(self._on_update_clicked)
+        self._btn_update.clicked.connect(self._on_update_button_clicked)
         self._btn_cancel = QPushButton("Cancel")
         self._btn_cancel.clicked.connect(self._runner_cancel)
         self._btn_cancel.hide()
@@ -343,6 +395,11 @@ class MainWindow(QMainWindow):
 
     def apply_zypper_status(self, status: UpdateStatus) -> None:
         """Called when the status file (written by the root checker) changes."""
+        # The background check runs every few hours whether or not the user put
+        # anything off. If it comes back clean the thing they were avoiding has
+        # gone, and there is no reason to keep hiding the updates from them.
+        if not status.zypper.error and not status.zypper.failed_repos:
+            self._settings.set_deferred_until(None)
         self._status.zypper = status.zypper
         self._status.generated = status.generated
         self._status.snapshots_ok = status.snapshots_ok
@@ -367,6 +424,10 @@ class MainWindow(QMainWindow):
     def runner_active(self) -> bool:
         return self._runner.is_running
 
+    def reload_icon(self) -> None:
+        """Rebuild the window icon: the style changed, or the theme did."""
+        self.setWindowIcon(window_icon(self._settings.load().icon_style))
+
     def show_and_raise(self) -> None:
         self.showNormal()
         self.raise_()
@@ -380,9 +441,16 @@ class MainWindow(QMainWindow):
     def _on_check_clicked(self) -> None:
         if self._privileged.check_running or self._runner.is_running:
             return
+        # Asking for a check is the plain opposite of putting one off. This is
+        # the one route that clears it outright, and it covers the window's own
+        # button, the tray menu's, and the re-checks that follow an update run
+        # or a wait for the lock.
+        self._settings.set_deferred_until(None)
+        # Started before the UI is touched, so that _set_busy() sees the check
+        # as running and greys the banner's button out with the rest.
+        self._privileged.run_check(self._settings.load().wait_for_packagekit)
         self._set_busy(True, "Checking for updates…")
         self.stateChanged.emit(TrayState.BUSY, "Checking for updates…")
-        self._privileged.run_check(self._settings.load().wait_for_packagekit)
         self._flatpak.start()
 
     def _on_wait_for_lock_clicked(self) -> None:
@@ -435,7 +503,47 @@ class MainWindow(QMainWindow):
 
     # -- updating -------------------------------------------------------- #
 
-    def _on_update_clicked(self) -> None:
+    def _on_update_button_clicked(self) -> None:
+        """The window's own update button, whichever it is currently saying.
+
+        "Update now…" still has the question to ask; "Update with X anyway" is
+        the answer, so asking again would be asking twice.
+        """
+        self._on_update_clicked(
+            leave_unreachable_out=False if self._banner_offers_leave_out else None
+        )
+
+    def _on_defer_clicked(self) -> None:
+        """Stop asking about this until tomorrow.
+
+        No confirmation. It changes nothing on the computer, and "Check now" is
+        two inches away and undoes it.
+        """
+        tomorrow = date.today() + timedelta(days=1)
+        self._settings.set_deferred_until(tomorrow)
+        self._statusbar(f"Put off until {_day(tomorrow)}.")
+        self._render()
+
+    def _on_update_without_unreachable(self) -> None:
+        """The banner's button: update with the missing sources left out.
+
+        Takes no argument, because which sources are unreachable is worked out
+        by the helper, as root, from its own refresh. Nothing here is passed
+        down but the decision itself.
+        """
+        self._on_update_clicked(leave_unreachable_out=True)
+
+    def _on_update_clicked(self, leave_unreachable_out: bool | None = None) -> None:
+        """Start an update run.
+
+        *leave_unreachable_out* is None when the user pressed "Update now" and
+        has not been asked yet, and True when they arrived by a route that has
+        already said what it will do - the banner's button. It is never False
+        from a caller; that is only what the question can answer.
+
+        Qt calls this with no arguments (the clicked(bool) signal is adapted to
+        the slot's arity), so the default has to be the "ask me" case.
+        """
         if self._runner.is_running:
             return
         prefs = self._settings.load()
@@ -451,6 +559,16 @@ class MainWindow(QMainWindow):
             return
 
         dup_args = dup_args_from_prefs(prefs)
+
+        without_unreachable = False
+        if do_zypper and self._status.zypper.failed_repos:
+            if leave_unreachable_out is None:
+                answer = self._ask_about_unreachable_sources()
+                if answer is None:
+                    return
+                without_unreachable = answer
+            else:
+                without_unreachable = leave_unreachable_out
 
         lines = ["The following will run in the terminal below:"]
         if do_zypper:
@@ -488,12 +606,20 @@ class MainWindow(QMainWindow):
             # list that will run as root is visible.
             lines.append("")
             lines.append("  $ zypper dup " + " ".join(dup_args))
+            if without_unreachable:
+                names = [n for _a, n in self._status.zypper.failed_repos]
+                lines.append("")
+                lines.append(
+                    f"  {', '.join(names)} will be left out of this update and "
+                    "switched back on when it finishes."
+                )
 
         steps = self._runner.build_queue(
             do_zypper=do_zypper,
             dup_args=dup_args,
             cleanup=prefs.cleanup_after_update,
             wait_for_packagekit=prefs.wait_for_packagekit,
+            without_unreachable=without_unreachable,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
         )
@@ -504,6 +630,60 @@ class MainWindow(QMainWindow):
         self.stateChanged.emit(TrayState.BUSY, "Installing updates…")
         self._runner.start(steps)
         self._terminal.setFocus()
+
+    def _ask_about_unreachable_sources(self) -> bool | None:
+        """Offer to leave the unreachable sources out of this one update.
+
+        Returns True to leave them out, False to try with them left in, and
+        None to call the whole thing off.
+
+        Asked here rather than decided in the helper because it is a change to
+        the machine, however briefly, and a user who is told what is happening
+        can make sense of the terminal underneath. Asked *before* the upgrade
+        rather than after it fails because the failure is zypper's paragraph
+        about orphaned packages, and by then the person has already been given
+        a fright for something that is only somebody else's server being down.
+        """
+        names = [name for _alias, name in self._status.zypper.failed_repos]
+        one = len(names) == 1
+        # listed names them, subject opens a sentence about them, pronoun
+        # stands in for them mid-sentence.
+        listed = names[0] if one else ", ".join(names)
+        subject = names[0] if one else "They"
+        pronoun = "it" if one else "them"
+        verb = "is" if one else "are"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(f"{listed} can’t be reached")
+        box.setText(
+            f"{listed} can’t be reached at the moment, and the update "
+            f"usually won’t go ahead while {pronoun} {verb} switched on."
+            "\n\n"
+            f"{subject} can be left out of this one update and switched back "
+            "on the moment it finishes, so nothing about your computer "
+            "changes permanently. Anything you installed from "
+            f"{pronoun} stays where it is."
+        )
+        leave_out = box.addButton(
+            "Leave it out just this once" if len(names) == 1
+            else "Leave them out just this once",
+            QMessageBox.AcceptRole,
+        )
+        # Worth keeping for the case the banner cannot tell apart: when zypper
+        # still has usable details on disk the upgrade works with the source
+        # left in, and leaving it out is then needless.
+        anyway = box.addButton("Try anyway", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(leave_out)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is leave_out:
+            return True
+        if clicked is anyway:
+            return False
+        return None
 
     def _runner_cancel(self) -> None:
         if self._runner.cancel():
@@ -593,14 +773,22 @@ class MainWindow(QMainWindow):
                     chk.setChecked(True)
                 chk.setEnabled(not self._runner.is_running)
 
+        # Read once and passed down, so the headline, the banner and the tray
+        # cannot disagree within a single pass.
+        deferred = self._settings.deferred_until()
+
         checked = _relative_time(self._status.generated)
         if z.error:
+            # A check that actually failed is not something the user put off,
+            # so it still wins the headline.
             self._headline.setText("Could not check for system updates")
+        elif deferred is not None:
+            self._headline.setText(f"Update check deferred until {_day(deferred)}")
         elif total == 0:
             self._headline.setText("Your system is up to date")
         else:
             self._headline.setText(f"{total} update(s) available")
-        self._render_banner(z, total)
+        self._render_banner(z, total, deferred)
 
         bits = [f"Last checked {checked}"]
         if z.count and z.download_size:
@@ -610,7 +798,7 @@ class MainWindow(QMainWindow):
         self._subline.setText(" · ".join(bits))
 
         self._update_buttons()
-        self._emit_state()
+        self._emit_state(deferred)
 
     def _add_group(self, title: str, rows: list[tuple[str, str, str]]) -> None:
         parent = QTreeWidgetItem([title, "", ""])
@@ -621,7 +809,7 @@ class MainWindow(QMainWindow):
         for name, change, arch in rows:
             parent.addChild(QTreeWidgetItem([name, change, arch]))
 
-    def _emit_state(self) -> None:
+    def _emit_state(self, deferred=None) -> None:
         z = self._status.zypper
         total = z.count + (
             self._status.flatpak.count if self._include_flatpak() else 0
@@ -630,6 +818,12 @@ class MainWindow(QMainWindow):
             return
         if z.error:
             self.stateChanged.emit(TrayState.ERROR, z.error)
+        elif deferred is not None:
+            # The whole point of putting it off: the icon stops looking like
+            # there is something to attend to.
+            self.stateChanged.emit(
+                TrayState.IDLE, f"Update check deferred until {_day(deferred)}"
+            )
         elif total > 0:
             self.stateChanged.emit(
                 TrayState.UPDATES, f"{total} update(s) available"
@@ -646,10 +840,24 @@ class MainWindow(QMainWindow):
             self._chk_flatpak.isChecked() and fp > 0
         )
         self._btn_update.setEnabled(has and not self._runner.is_running)
+        # Two buttons offering an update need to say how they differ, or the
+        # user is left guessing which one this situation calls for. Neither is
+        # greyed out: leaving the source in is not a mistake, and it is the one
+        # that works while zypper still has usable details for it on disk.
+        if self._banner_offers_leave_out:
+            names = [name for _alias, name in z.failed_repos]
+            self._btn_update.setText(
+                f"Update with {names[0]} anyway"
+                if len(names) == 1
+                else "Update with them anyway"
+            )
+        else:
+            self._btn_update.setText(_UPDATE_BUTTON_TEXT)
 
     def _set_busy(self, busy: bool, text: str) -> None:
         self._btn_check.setEnabled(not busy)
         self._progress.setVisible(busy)
+        self._update_banner_button()
         if text:
             self._statusbar(text)
 
@@ -662,6 +870,7 @@ class MainWindow(QMainWindow):
             not running and self._status.flatpak.count > 0
         )
         self._progress.setVisible(running)
+        self._update_banner_button()
         self._update_log_controls()
 
     def _update_log_controls(self) -> None:
@@ -696,27 +905,54 @@ class MainWindow(QMainWindow):
         text: str,
         button: str = "",
         on_click=None,
+        alt_button: str = "",
+        alt_on_click=None,
         tone: str = "warning",
     ) -> None:
         self._banner_label.setText(text)
-        self._banner.setStyleSheet(_BANNER_STYLES.get(tone, _BANNER_STYLES["warning"]))
+        if tone not in _BANNER_STYLES:
+            tone = "warning"
+        self._banner.setStyleSheet(_BANNER_STYLES[tone])
+        self._banner_layout.setContentsMargins(*_BANNER_MARGINS[tone])
         self._banner_action = on_click
         self._banner_btn.setText(button)
         self._banner_btn.setVisible(bool(button))
-        self._banner_btn.setEnabled(True)
+        self._banner_alt_action = alt_on_click
+        self._banner_btn_alt.setText(alt_button)
+        self._banner_btn_alt.setVisible(bool(alt_button))
         self._banner.show()
+        self._update_banner_button()
 
     def _hide_banner(self) -> None:
         self._banner_action = None
+        self._banner_alt_action = None
         self._banner.hide()
+
+    def _update_banner_button(self) -> None:
+        """Grey the banner's button out while the package system is ours.
+
+        Every action it offers ends in a helper that needs zypper's lock, and
+        this window is the thing most likely to be holding it: a check starts
+        by itself as soon as an update run finishes, and takes half a minute.
+        Clicking through that window used to reach zypper and come back with
+        its refusal, which the user reads as the app breaking rather than as
+        two of its own jobs colliding.
+        """
+        busy = self._busy_with_the_package_system()
+        self._banner_btn.setEnabled(not busy)
+        self._banner_btn_alt.setEnabled(not busy)
 
     def _on_banner_button(self) -> None:
         if self._banner_action is not None:
             self._banner_action()
 
+    def _on_banner_alt_button(self) -> None:
+        if self._banner_alt_action is not None:
+            self._banner_alt_action()
+
     # -- banner ------------------------------------------------------------ #
 
-    def _render_banner(self, z, total: int) -> None:
+    def _render_banner(self, z, total: int, deferred=None) -> None:
         """Decide what the banner says.
 
         More than one of these can be true at once - a source that could not be
@@ -728,6 +964,13 @@ class MainWindow(QMainWindow):
         problem = False
         button = ""
         on_click = None
+        alt_button = ""
+        alt_on_click = None
+        # Read by _update_buttons(), which runs straight after this and gives
+        # the window's own button the other half of the choice. False until
+        # something below claims it, including on the path that hides the
+        # banner entirely.
+        self._banner_offers_leave_out = False
 
         if z.error:
             parts.append(z.error)
@@ -738,18 +981,37 @@ class MainWindow(QMainWindow):
                 button = "Wait for it and retry"
                 on_click = self._on_wait_for_lock_clicked
 
-        if z.failed_repos:
+        if z.failed_repos and deferred is not None:
+            # Put off until tomorrow, so the paragraph and both buttons go and
+            # one line stays. Nothing else in this method is suppressed: a
+            # failed check, a held lock and a missing snapshot plugin are real
+            # problems and are not what the user put off.
+            parts.append(_deferred_sources_text(z.failed_repos, deferred))
+        elif z.failed_repos:
+            # Deliberately does not set `problem`. A source that cannot be
+            # reached is not something wrong with this computer, and the button
+            # below goes straight past it, so it gets plain text rather than
+            # the orange bar.
             parts.append(_missing_sources_text(z.failed_repos, total))
-            problem = True
-            # Switching one off is a clear choice; with several it is not, so
-            # the text says what happened and the user decides which to act on.
-            if not button and len(z.failed_repos) == 1:
-                alias, name = z.failed_repos[0]
-                # Paired with "Switch X back on" below, so the two read as one
-                # setting being changed rather than two unrelated actions. It
-                # is a setting: the change persists until it is reversed.
-                button = f"Switch {name} off"
-                on_click = partial(self._on_stop_using_source, alias, name)
+            # The upgrade, with the unreachable sources left out for its
+            # duration and put back afterwards. This used to offer to switch
+            # one off for good, which was a trap: measured on a real machine,
+            # switching off a source that installed packages came from leaves
+            # them orphaned, and the next check cannot compute anything at all
+            # (zypper raises a solver question per orphan and, non-interactive,
+            # gives up). Whatever is offered here has to be reversible, and
+            # this is.
+            if not button and z.count:
+                names = [name for _alias, name in z.failed_repos]
+                button = (
+                    f"Update without {names[0]}"
+                    if len(names) == 1
+                    else "Update without them"
+                )
+                on_click = self._on_update_without_unreachable
+                alt_button = "Try again tomorrow"
+                alt_on_click = self._on_defer_clicked
+                self._banner_offers_leave_out = True
 
         for alias, name in self._sources_we_switched_off():
             parts.append(
@@ -774,9 +1036,13 @@ class MainWindow(QMainWindow):
             "\n\n".join(parts),
             button=button,
             on_click=on_click,
-            # Nothing is wrong when the only thing to say is that a source the
-            # user switched off is still off, so that one is not orange.
-            tone="warning" if problem else "neutral",
+            alt_button=alt_button,
+            alt_on_click=alt_on_click,
+            # One rule: orange for something wrong with this computer, plain
+            # text for everything else. A failed check, a held lock and a
+            # missing snapshot plugin set `problem`; an unreachable source and
+            # a source the user switched off themselves do not.
+            tone="warning" if problem else "plain",
         )
 
     def _sources_we_switched_off(self) -> list[tuple[str, str]]:
@@ -809,44 +1075,34 @@ class MainWindow(QMainWindow):
                 out.append((repo.alias, repo.label))
         return out
 
-    def _on_stop_using_source(self, alias: str, name: str) -> None:
-        if self._privileged.repos_running or self._runner.is_running:
-            return
-        # Three things the earlier wording left the user to guess at, one per
-        # paragraph: that this lasts until they reverse it (zypper writes
-        # enabled=0 into the source's file and nothing ever writes it back),
-        # that it is a change to the whole computer rather than a setting
-        # inside this app, and that they need not do it at all, since the
-        # upgrade already carries on without the source.
-        if (
-            QMessageBox.question(
-                self,
-                f"Switch {name} off?",
-                f"Switching {name} off is not just for this update. It stays "
-                "off until you switch it back on, including after a restart, "
-                "and it applies to everything on this computer that installs "
-                "software, not only Tumbleweed Updater."
-                "\n\n"
-                f"Anything you already installed from {name} stays on your "
-                "computer and keeps working. It just will not be offered new "
-                "versions."
-                "\n\n"
-                "You do not have to do this. Updates work without it, and the "
-                f"warning will clear on its own if {name} can be reached "
-                "again. If you do switch it off, this window will remind you, "
-                "with a button to switch it back on.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            != QMessageBox.Yes
-        ):
-            return
-        self._change_source(alias, name, enabled=False)
+    # There is deliberately no "switch this source off for good" here any
+    # more. It was the banner's button until a real machine showed what it
+    # costs: switch off a source that installed packages came from, and every
+    # one of them is orphaned, so the next check gets a solver question per
+    # orphan, answers none of them, and computes nothing at all. The window
+    # then said "Could not check for system updates" with no way back except
+    # this method's opposite. Whatever the banner offers has to be reversible,
+    # so it now offers the upgrade with the source left out for its duration.
+    # _on_switch_source_back_on() stays, for anything an older version of this
+    # app switched off.
 
     def _on_switch_source_back_on(self, alias: str, name: str) -> None:
-        if self._privileged.repos_running or self._runner.is_running:
+        if self._busy_with_the_package_system():
             return
         self._change_source(alias, name, enabled=True)
+
+    def _busy_with_the_package_system(self) -> bool:
+        """Is one of our own jobs holding zypper's lock?
+
+        What _update_banner_button() greys the button on, and checked again on
+        the way in because the button is not the only route here: a click
+        already in flight when a check starts would otherwise get through.
+        """
+        return (
+            self._privileged.check_running
+            or self._privileged.repos_running
+            or self._runner.is_running
+        )
 
     def _change_source(self, alias: str, name: str, enabled: bool) -> None:
         self._banner_btn.setEnabled(False)
@@ -855,7 +1111,7 @@ class MainWindow(QMainWindow):
         def done(ok: bool, message: str) -> None:
             self._privileged.reposFinished.disconnect(done)
             if not ok:
-                self._banner_btn.setEnabled(True)
+                self._update_banner_button()
                 self._statusbar(f"Could not change {name}.")
                 QMessageBox.warning(
                     self,
@@ -879,7 +1135,7 @@ class MainWindow(QMainWindow):
         self._privileged.reposFinished.connect(done)
         if not self._privileged.set_repo_enabled(alias, enabled):
             self._privileged.reposFinished.disconnect(done)
-            self._banner_btn.setEnabled(True)
+            self._update_banner_button()
 
     # -- settings -------------------------------------------------------- #
 

@@ -137,6 +137,17 @@ class UpdateStatus:
 # zypper
 # --------------------------------------------------------------------------- #
 
+# Read by someone who has never heard of a repository, like everything else
+# that reaches the window. The cause is nearly always the one named here, since
+# an ordinary upgrade does not raise solver questions.
+_NEEDS_A_DECISION = (
+    "The list of updates couldn’t be worked out. Some of the programs you "
+    "have installed came from a software source that is switched off or "
+    "can’t be reached, so there is no newer version to offer them. "
+    "Switching that source back on is usually the fix."
+)
+
+
 def parse_zypper_dup_xml(xml_text: str) -> ZypperResult:
     """Parse ``zypper --xmlout dup --dry-run`` output.
 
@@ -178,6 +189,17 @@ def parse_zypper_dup_xml(xml_text: str) -> ZypperResult:
         # computing one.
         if errors:
             result.error = "; ".join(errors)
+        elif root.find(".//prompt") is not None:
+            # zypper stopped to ask a question and, being non-interactive, took
+            # its own default and gave up. Measured: switch off a source that
+            # some installed packages came from, and the solver raises one of
+            # these per orphaned package ("does not belong to a distupgrade
+            # repository and must be replaced"), so nothing at all is computed
+            # and the exit code is a bare 4. Everything it printed is
+            # <message type="info"> and a <prompt>, which is why this looks at
+            # the element rather than the words: the words are translated, the
+            # element name is not.
+            result.error = _NEEDS_A_DECISION
         return result
 
     result.download_size = _int(summary.get("download-size"))

@@ -138,3 +138,56 @@ def test_flatpak_parser():
     assert [r.ref_id for r in refs] == ["org.kde.Kdenlive", "org.gimp.GIMP"]
     assert refs[0].version == "24.12.0"
     assert refs[0].installation == "user"
+
+
+# A real capture, trimmed: `zypper --xmlout dup --dry-run` after a software
+# source that installed packages came from was switched off. Every one of them
+# is orphaned, the solver raises a question per orphan, and non-interactive
+# zypper takes its default (cancel) and exits 4 with an empty stderr - so the
+# window used to show the bare words "zypper exited 4".
+SOLVER_QUESTION = """<?xml version='1.0'?>
+<stream>
+<message type="info">Computing distribution upgrade...</message>
+<message type="info">14 Problems:</message>
+<message type="info">Problem: 1: problem with the installed vlc-3.0.23-425.6.x86_64</message>
+<prompt id="1">
+<description>Problem: 1: Detailed information:
+- the installed vlc-3.0.23-425.6.x86_64 does not belong to a distupgrade repository and must be replaced
+ Solution 1: install vlc-3.0.23-425.5.x86_64 from vendor openSUSE
+ Solution 2: keep obsolete vlc-3.0.23-425.6.x86_64
+</description>
+<text>Choose from above solutions by number or skip, retry or cancel</text>
+<option value="1" desc="Choose solution 1"/>
+<option default="1" value="c" desc="Choose no solution and cancel."/>
+</prompt>
+</stream>
+"""
+
+
+def test_a_solver_question_is_explained_rather_than_counted():
+    result = sources.parse_zypper_dup_xml(SOLVER_QUESTION)
+
+    assert result.packages == []
+    assert result.error
+    # Written for someone who has never heard of a repository, like everything
+    # else that reaches the window.
+    for jargon in ("repository", "distupgrade", "solver", "zypper", "exit"):
+        assert jargon not in result.error.lower(), jargon
+    assert "switched off" in result.error
+
+
+def test_an_ordinary_prompt_alongside_a_summary_is_not_an_error():
+    """zypper also prompts for GPG keys and media changes. Only a stream that
+    computed nothing at all is a failure."""
+    with_summary = SOLVER_QUESTION.replace(
+        "</stream>",
+        '<install-summary download-size="1" space-usage-diff="0" '
+        'packages-to-change="1" need-restart="false" need-reboot="false">'
+        '<to-upgrade><solvable status="installed" kind="package" name="bash" '
+        'edition="5.3" edition-old="5.2" arch="x86_64"/></to-upgrade>'
+        "</install-summary></stream>",
+    )
+    result = sources.parse_zypper_dup_xml(with_summary)
+
+    assert result.error is None
+    assert [p.name for p in result.packages] == ["bash"]

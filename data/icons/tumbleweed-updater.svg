@@ -1,8 +1,16 @@
 <!-- The application icon, used by the .desktop entry and the hicolor theme.
-     Same openSUSE Tumbleweed logo as the "tumbleweed" tray style, and the same
-     currentColor convention, so the two match wherever both are on screen. -->
+     The same openSUSE Tumbleweed logo as the "tumbleweed" tray style.
+
+     Painted in openSUSE green rather than currentColor, because the launcher is
+     handed this file as it is, and currentColor with nothing to inherit from
+     resolves to black. #73ba25 is the colour of openSUSE-distributor-logo.svg,
+     the Welcome app and the YaST icons, yast-update-online among them.
+
+     A static file cannot follow the Plasma colour scheme, so this one does not
+     try. The tray and window icons do: they render the currentColor line art in
+     icons/styles/ and tint it at runtime. See icons.window_icon(). -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"
-     fill="currentColor">
+     fill="#73ba25">
   <g transform="translate(64 64) scale(0.94) translate(-64 -64)">
     <path d="
      m 98.287072,34.189016 c -5.865872,0 -11.568688,1.695144 -16.647368,4.589648

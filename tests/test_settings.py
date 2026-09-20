@@ -1,4 +1,5 @@
 import os
+from datetime import date, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -38,6 +39,7 @@ def isolated_config_home(tmp_path, monkeypatch):
     # unaffected, but anything checking a default has to start from a known
     # state, so the keys that are not written by every test are cleared here.
     SettingsStore().set_disabled_sources([])
+    SettingsStore().set_deferred_until(None)
 
 
 def test_dup_args_default_empty():
@@ -227,3 +229,55 @@ def test_the_settings_dialog_cannot_clobber_the_disabled_sources(app):
     store.set_disabled_sources(["vlc"])
     store.save(Prefs())
     assert store.disabled_sources() == ["vlc"]
+
+
+# --------------------------------------------------------------------------- #
+# Putting the check off for a day.
+# --------------------------------------------------------------------------- #
+
+
+def test_no_deferral_by_default(app):
+    assert SettingsStore().deferred_until() is None
+
+
+def test_a_deferral_round_trips(app):
+    tomorrow = date.today() + timedelta(days=1)
+    SettingsStore().set_deferred_until(tomorrow)
+
+    assert SettingsStore().deferred_until() == tomorrow
+
+
+def test_a_deferral_that_has_arrived_is_over(app):
+    """The date shown is the day the check comes back, so on that day the
+    deferral is spent. Reading it also clears it, rather than leaving a stale
+    date in the config file for ever."""
+    store = SettingsStore()
+    store.set_deferred_until(date.today())
+
+    assert store.deferred_until() is None
+    assert store._s.value("check/deferredUntil", "", str) == ""
+
+
+def test_yesterdays_deferral_is_over_too(app):
+    store = SettingsStore()
+    store.set_deferred_until(date.today() - timedelta(days=30))
+
+    assert store.deferred_until() is None
+
+
+def test_clearing_a_deferral(app):
+    store = SettingsStore()
+    store.set_deferred_until(date.today() + timedelta(days=1))
+    store.set_deferred_until(None)
+
+    assert store.deferred_until() is None
+
+
+def test_a_damaged_deferral_is_discarded_rather_than_raised(app):
+    """It is read on every render, so it must not be able to take the window
+    down however the file got mangled."""
+    store = SettingsStore()
+    store._s.setValue("check/deferredUntil", "next tuesday")
+
+    assert store.deferred_until() is None
+    assert store._s.value("check/deferredUntil", "", str) == ""

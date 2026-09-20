@@ -148,6 +148,31 @@ def test_set_enabled_builds_the_right_command(monkeypatch):
     assert seen["argv"][-2:] == ["--enable", "vlc"]
 
 
+def test_set_enabled_translates_a_held_package_lock(monkeypatch):
+    """zypper's own words for exit 7 are "System management is locked by the
+    application with pid N ... Close this application before trying again."
+    Passed through, the user reads that in a dialog they did not type anything
+    into, above a window that is not going to close itself."""
+    monkeypatch.setattr(
+        repos.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a,
+            returncode=7,
+            stdout="",
+            stderr=(
+                "System management is locked by the application with pid 3383 "
+                "(zypper).\nClose this application before trying again."
+            ),
+        ),
+    )
+    message = repos.set_enabled("vlc", enabled=False)
+    assert "Close this application" not in message
+    assert "try again" in message
+    for jargon in ("repository", "zypper", "pid", "exit"):
+        assert jargon not in message.lower(), jargon
+
+
 def test_set_enabled_returns_zyppers_complaint(monkeypatch):
     monkeypatch.setattr(
         repos.subprocess,
@@ -157,3 +182,78 @@ def test_set_enabled_returns_zyppers_complaint(monkeypatch):
         ),
     )
     assert "not found" in repos.set_enabled("nope", enabled=False)
+
+
+# --------------------------------------------------------------------------- #
+# The note that puts a source back after an interrupted upgrade.
+# --------------------------------------------------------------------------- #
+
+
+def _listing(monkeypatch, *pairs):
+    """Stand in for the real source list: (alias, enabled) per source."""
+    monkeypatch.setattr(
+        repos,
+        "list_repos",
+        lambda *a, **k: repos.ReposResult(
+            repos=[repos.Repo(alias=a, enabled=e) for a, e in pairs]
+        ),
+    )
+
+
+def test_a_remembered_source_is_switched_back_on(monkeypatch, tmp_path):
+    note = str(tmp_path / "restore.json")
+    switched = []
+    _listing(monkeypatch, ("vlc", False))
+    monkeypatch.setattr(
+        repos, "set_enabled", lambda alias, enabled, **k: switched.append(
+            (alias, enabled)
+        )
+    )
+
+    repos.remember_to_restore(["vlc"], note)
+    assert repos.restore_remembered(note) == ["vlc"]
+    assert switched == [("vlc", True)]
+    # The note goes once it has been acted on, so the next check does nothing.
+    assert repos.restore_remembered(note) == []
+
+
+def test_restoring_without_a_note_does_nothing(tmp_path):
+    assert repos.restore_remembered(str(tmp_path / "nothing.json")) == []
+
+
+def test_a_source_that_has_since_gone_is_skipped(monkeypatch, tmp_path):
+    """The note names an alias; by the time it is read the user may have
+    deleted that source. Nothing invented reaches a zypper command line."""
+    note = str(tmp_path / "restore.json")
+    switched = []
+    _listing(monkeypatch, ("other", True))
+    monkeypatch.setattr(
+        repos, "set_enabled", lambda alias, enabled, **k: switched.append(alias)
+    )
+
+    repos.remember_to_restore(["vlc"], note)
+    assert repos.restore_remembered(note) == []
+    assert switched == []
+
+
+def test_a_source_the_user_switched_on_again_is_left_alone(monkeypatch, tmp_path):
+    note = str(tmp_path / "restore.json")
+    switched = []
+    _listing(monkeypatch, ("vlc", True))
+    monkeypatch.setattr(
+        repos, "set_enabled", lambda alias, enabled, **k: switched.append(alias)
+    )
+
+    repos.remember_to_restore(["vlc"], note)
+    assert repos.restore_remembered(note) == []
+    assert switched == []
+
+
+def test_a_damaged_note_is_discarded_rather_than_acted_on(tmp_path):
+    """It can only ever switch a source *on*, so the worst a bad file can do is
+    nothing. Confirm it also does not raise, since helper/check calls this
+    before it does anything else."""
+    note = tmp_path / "restore.json"
+    note.write_text("not json at all")
+    assert repos.restore_remembered(str(note)) == []
+    assert not note.exists()

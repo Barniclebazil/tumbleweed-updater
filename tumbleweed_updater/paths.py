@@ -13,6 +13,15 @@ import re
 STATUS_DIR = "/run/tumbleweed-updater"
 STATUS_FILE = os.path.join(STATUS_DIR, "status.json")
 
+# State that must outlive a reboot, so not /run. There is exactly one thing in
+# it: the list of software sources helper/run-update switched off for the
+# duration of one upgrade. If the machine loses power between switching them
+# off and putting them back, helper/check finds this file on its next run and
+# finishes the job. Created at runtime by whichever helper writes it; nothing
+# in the packaging ships it.
+STATE_DIR = "/var/lib/tumbleweed-updater"
+SOURCES_TO_RESTORE = os.path.join(STATE_DIR, "sources-to-restore.json")
+
 # Helpers installed by the package. Invoked through pkexec; the paths are
 # referenced verbatim by the polkit policy, so do not change one without the
 # other.

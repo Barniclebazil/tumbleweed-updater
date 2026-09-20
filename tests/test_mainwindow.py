@@ -6,6 +6,7 @@ clears it. These cover when that happens and when it must not.
 """
 
 import os
+from datetime import date, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,6 +15,7 @@ from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tumbleweed_updater.mainwindow import MainWindow
+from tumbleweed_updater.tray import TrayState
 from tumbleweed_updater.repos import Repo, ReposResult
 from tumbleweed_updater.runner import Step
 from tumbleweed_updater.settings import Prefs, SettingsStore
@@ -68,6 +70,7 @@ def isolated_config_home(tmp_path, monkeypatch):
     # unaffected, but anything checking a default has to start from a known
     # state, so the keys that are not written by every test are cleared here.
     SettingsStore().set_disabled_sources([])
+    SettingsStore().set_deferred_until(None)
 
 
 @pytest.fixture
@@ -275,8 +278,10 @@ def test_first_shown_fires_once(window):
 # --------------------------------------------------------------------------- #
 
 
-def _apply(win, **zypper_kwargs):
-    status = UpdateStatus(zypper=ZypperResult(**zypper_kwargs), snapshots_ok=True)
+def _apply(win, snapshots_ok=True, **zypper_kwargs):
+    status = UpdateStatus(
+        zypper=ZypperResult(**zypper_kwargs), snapshots_ok=snapshots_ok
+    )
     win.apply_zypper_status(status)
     return win._banner_label.text()
 
@@ -289,29 +294,6 @@ def _banner_showing(win) -> bool:
 
 def _banner_button(win) -> str:
     return win._banner_btn.text() if not win._banner_btn.isHidden() else ""
-
-
-def _press_the_banner_button(win, monkeypatch) -> dict:
-    """Click the banner's button and return the dialog it raised.
-
-    Answers No, so the tests that only read the wording change nothing.
-    """
-    asked = {}
-
-    def fake_question(parent, title, body, *a, **k):
-        asked["title"] = title
-        asked["body"] = body
-        return QMessageBox.No
-
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
-    win._banner_btn.click()
-    return asked
-
-
-def _ask_about_switching_off(win, monkeypatch) -> str:
-    """The body of the "switch this source off?" question, for one source."""
-    _apply(win, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
-    return _press_the_banner_button(win, monkeypatch)["body"]
 
 
 def _some_packages(n=3):
@@ -327,8 +309,14 @@ def test_one_unreachable_source_is_explained_in_plain_language(window):
 
     assert "VLC" in text
     assert "left out" in text
-    assert "The other 43 updates can still be installed." in text
+    assert "The other 43 updates were checked as usual." in text
     assert "keep working" in text
+    # Not a promise that they will install: zypper refuses the upgrade outright
+    # once it has no usable details left for the missing source, and says the
+    # source has to be switched off. So does this.
+    assert "can still be installed" not in text
+    # What to do about it is the button's job now, not another sentence's.
+    assert "switch" not in text.lower()
     # None of the vocabulary the user would have to look up.
     for jargon in ("repository", "metadata", "refresh", "zypper", "exit"):
         assert jargon not in text.lower(), jargon
@@ -336,11 +324,49 @@ def test_one_unreachable_source_is_explained_in_plain_language(window):
     assert "vlc" not in text.replace("VLC", "")
 
 
-def test_one_unreachable_source_offers_to_switch_it_off(window):
+def test_one_unreachable_source_offers_the_upgrade_without_it(window):
+    """It used to offer to switch the source off for good. On a real machine
+    that broke the app outright: the packages installed from VLC were orphaned,
+    and the next check got a solver question per orphan, answered none, and
+    computed nothing, leaving "Could not check for system updates" and no way
+    forward. What the banner offers has to be reversible."""
     _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
 
-    # Paired with "Switch VLC back on", so the two read as one setting.
-    assert _banner_button(window) == "Switch VLC off"
+    assert _banner_button(window) == "Update without VLC"
+
+
+def test_nothing_is_offered_when_there_is_no_upgrade_to_run(window):
+    _apply(window, failed_repos=[("vlc", "VLC")])
+
+    assert _banner_button(window) == ""
+
+
+def test_the_banner_button_waits_for_the_windows_own_check(window, monkeypatch):
+    """Everything the banner offers ends in a helper that needs zypper's lock,
+    and this window is the thing most likely to be holding it: a check starts
+    by itself the moment an update run ends, and takes half a minute. Clicking
+    through that window reached zypper and came back with its refusal, which
+    reads as the app being broken rather than as two of its own jobs meeting.
+    """
+    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
+    assert window._banner_btn.isEnabled()
+
+    monkeypatch.setattr(
+        type(window._privileged), "check_running", property(lambda self: True)
+    )
+    window._set_busy(True, "")
+    assert not window._banner_btn.isEnabled()
+
+    # A click that was already on its way finds the door shut too.
+    window._on_switch_source_back_on("vlc", "VLC")
+    assert window._privileged.repo_calls == []
+
+
+def test_the_banner_button_comes_back_when_the_check_ends(window):
+    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
+    window._set_busy(True, "")
+    window._set_busy(False, "")
+    assert window._banner_btn.isEnabled()
 
 
 def test_several_unreachable_sources_are_counted_and_named(window):
@@ -351,9 +377,9 @@ def test_several_unreachable_sources_are_counted_and_named(window):
     )
 
     assert "2 of your software sources" in text
-    assert "VLC, Packman" in text
-    # No button: which one to switch off is not a decision the app can make.
-    assert _banner_button(window) == ""
+    # One button covers them all: the helper leaves out whatever its own
+    # refresh could not reach, so there is no per-source decision to make.
+    assert _banner_button(window) == "Update without them"
 
 
 def test_a_reachable_system_shows_no_banner(window):
@@ -362,11 +388,27 @@ def test_a_reachable_system_shows_no_banner(window):
 
 
 def test_an_unreachable_source_is_a_warning_not_an_error(window):
-    """The headline still counts the updates: they can all still be installed,
-    which is the whole point of the change underneath this."""
+    """The headline still counts the updates, and the message is written in the
+    window's own text rather than an orange bar. Somebody else's server being
+    down for the afternoon is not something wrong with this computer, and the
+    "Update now" dialog offers a way straight past it."""
     _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
 
     assert "43 update(s) available" in window._headline.text()
+    assert "#f67400" not in window._banner.styleSheet()
+
+
+def test_the_things_that_are_actually_wrong_keep_the_orange(window):
+    for kwargs in (
+        {"error": "System management is locked by pid 5899", "locked": True},
+        {"error": "zypper is not installed"},
+    ):
+        _apply(window, **kwargs)
+        assert "#f67400" in window._banner.styleSheet(), kwargs
+
+    # And the one that is not an error but is still a problem.
+    _apply(window, packages=_some_packages(3), snapshots_ok=False)
+    assert "#f67400" in window._banner.styleSheet()
 
 
 def test_a_check_failure_still_wins_over_a_missing_source(window):
@@ -382,91 +424,15 @@ def test_a_check_failure_still_wins_over_a_missing_source(window):
     assert _banner_button(window) == "Wait for it and retry"
 
 
-def test_switching_a_source_off_asks_first_and_calls_the_helper(window, monkeypatch):
-    asked = {}
-
-    def fake_question(parent, title, body, *a, **k):
-        asked["title"] = title
-        asked["body"] = body
-        return QMessageBox.Yes
-
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
-    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
-
-    window._banner_btn.click()
-
-    assert asked["title"] == "Switch VLC off?"
-    assert "stays on your computer" in asked["body"]
-    assert "switch it back on" in asked["body"]
-    assert window._privileged.repo_calls == [("vlc", False)]
-
-
-def test_the_question_says_the_change_lasts_until_it_is_reversed(window, monkeypatch):
-    """zypper writes enabled=0 into the source's file and nothing ever writes
-    it back, so nobody may press this thinking it skips one update."""
-    body = _ask_about_switching_off(window, monkeypatch)
-
-    assert "not just for this update" in body
-    assert "until you switch it back on" in body
-    assert "after a restart" in body
-
-
-def test_the_question_says_it_is_not_only_this_app(window, monkeypatch):
-    """YaST, Discover and a plain `zypper dup` all stop seeing the source too,
-    which the earlier wording hid behind "Tumbleweed Updater will stop..."."""
-    body = _ask_about_switching_off(window, monkeypatch)
-
-    assert "everything on this computer" in body
-    assert "not only Tumbleweed Updater" in body
-
-
-def test_the_question_says_the_user_need_not_do_it(window, monkeypatch):
-    """The upgrade already carries on without the source, so this button only
-    silences a warning. For a server that is briefly down, doing nothing is
-    the better answer and the dialog has to say so."""
-    body = _ask_about_switching_off(window, monkeypatch)
-
-    assert "You do not have to do this" in body
-    assert "Updates work without it" in body
-    assert "clear on its own" in body
-
-
-def test_the_question_and_the_button_agree(window, monkeypatch):
-    """A title that does not echo the button leaves the user wondering whether
-    they pressed the right thing."""
-    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
-    button = _banner_button(window)
-    asked = _press_the_banner_button(window, monkeypatch)
-
-    assert asked["title"] == button + "?"
-
-
-def test_declining_the_question_changes_nothing(window, monkeypatch):
-    monkeypatch.setattr(
-        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
-    )
-    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
-
-    window._banner_btn.click()
-
-    assert window._privileged.repo_calls == []
-
-
-def test_a_source_we_switched_off_is_remembered_and_offered_back(window, monkeypatch):
-    monkeypatch.setattr(
-        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
-    )
+def test_a_source_we_switched_off_is_offered_back(window, monkeypatch):
+    """Nothing in this app switches a source off for good any more, but an
+    older version did, and the note it left in the preferences has to keep
+    working - that button is the whole way back for anyone who pressed it."""
+    SettingsStore().set_disabled_sources(["vlc"])
     monkeypatch.setattr(
         "tumbleweed_updater.mainwindow.list_repos",
         lambda: ReposResult(repos=[Repo(alias="vlc", name="VLC", enabled=False)]),
     )
-    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
-    window._banner_btn.click()
-    window._privileged.reposFinished.emit(True, "")
-
-    assert SettingsStore().disabled_sources() == ["vlc"]
-
-    # A later check finds nothing wrong, and the note takes over.
     text = _apply(window, packages=_some_packages(3))
     assert text == "VLC is switched off, so its programs aren't being updated."
     assert _banner_button(window) == "Switch VLC back on"
@@ -527,3 +493,321 @@ def test_sources_we_never_touched_are_left_alone(window, monkeypatch):
     # Not even asked for: nothing was ever recorded, so there is nothing to
     # check against and no subprocess to spawn.
     assert called["n"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# "Update now" with a source that cannot be reached.
+#
+# The way past the problem, offered where the user is already trying to get
+# past it. It is a change to the machine, however briefly, so it is asked
+# rather than assumed.
+# --------------------------------------------------------------------------- #
+
+
+def _press_update(win, monkeypatch, answer):
+    """Press "Update now" and answer the unreachable-source dialog.
+
+    *answer* is "leave out", "anyway" or "cancel". Returns the argv of the
+    zypper step, or None if nothing was started.
+    """
+    started = {}
+    monkeypatch.setattr(
+        type(win._runner), "start", lambda self, steps: started.setdefault(
+            "steps", steps
+        )
+    )
+
+    asked = {}
+
+    def fake_exec(self):
+        asked["text"] = self.text()
+        asked["title"] = self.windowTitle()
+        wanted = {
+            "leave out": QMessageBox.AcceptRole,
+            "anyway": QMessageBox.DestructiveRole,
+            "cancel": QMessageBox.RejectRole,
+        }[answer]
+        for button in self.buttons():
+            if self.buttonRole(button) == wanted:
+                asked["labels"] = [b.text() for b in self.buttons()]
+                self.setResult(0)
+                # clickedButton() reads back what exec() would have recorded.
+                self.done(0)
+                self._clicked = button
+                return 0
+        raise AssertionError(f"no button with role {wanted}")
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton", lambda self: getattr(self, "_clicked", None)
+    )
+    win._on_update_clicked()
+    steps = started.get("steps")
+    asked["argv"] = steps[0].argv if steps else None
+    return asked
+
+
+def _ready_to_update(win, **kwargs):
+    _apply(win, packages=_some_packages(43), **kwargs)
+    win._chk_system.setChecked(True)
+
+
+def test_an_unreachable_source_offers_to_leave_it_out_of_this_update(
+    window, monkeypatch
+):
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    asked = _press_update(window, monkeypatch, "leave out")
+
+    assert "VLC" in asked["title"]
+    assert "--without-unreachable" in asked["argv"]
+    # The words that matter: temporary, and nothing else changes.
+    assert "this one update" in asked["text"]
+    assert "switched back on" in asked["text"]
+    for jargon in ("repository", "metadata", "zypper", "exit"):
+        assert jargon not in asked["text"].lower(), jargon
+
+
+def test_trying_anyway_leaves_the_source_in(window, monkeypatch):
+    """Worth keeping: when zypper still has usable details on disk the upgrade
+    works with the source left in, and leaving it out is then needless."""
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    asked = _press_update(window, monkeypatch, "anyway")
+
+    assert "--without-unreachable" not in asked["argv"]
+
+
+def test_cancelling_the_question_starts_nothing(window, monkeypatch):
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    asked = _press_update(window, monkeypatch, "cancel")
+
+    assert asked["argv"] is None
+
+
+def test_a_reachable_system_is_not_asked_anything(window, monkeypatch):
+    _ready_to_update(window)
+    started = {}
+    monkeypatch.setattr(
+        type(window._runner), "start", lambda self, steps: started.setdefault(
+            "steps", steps
+        )
+    )
+
+    def never(self):
+        raise AssertionError("asked about sources when none were missing")
+
+    monkeypatch.setattr(QMessageBox, "exec", never)
+    window._on_update_clicked()
+    assert "--without-unreachable" not in started["steps"][0].argv
+
+
+def test_the_banner_button_runs_the_upgrade_without_the_source(window, monkeypatch):
+    """No question this time: the button's own label already says what it will
+    do, so asking again would be asking twice."""
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    started = {}
+    monkeypatch.setattr(
+        type(window._runner), "start", lambda self, steps: started.setdefault(
+            "steps", steps
+        )
+    )
+
+    def never(self):
+        raise AssertionError("asked again after the button already said so")
+
+    monkeypatch.setattr(QMessageBox, "exec", never)
+    window._banner_btn.click()
+
+    assert "--without-unreachable" in started["steps"][0].argv
+
+
+# --------------------------------------------------------------------------- #
+# Two buttons offering an update have to say how they differ.
+#
+# Neither is greyed out. Leaving the source in is not a mistake: it is the one
+# that works while zypper still has usable details for it on disk, and the app
+# cannot tell in advance which case it is in.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_window_button_says_it_keeps_the_source_in(window):
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+
+    assert _banner_button(window) == "Update without VLC"
+    assert window._btn_update.text() == "Update with VLC anyway"
+    assert window._btn_update.isEnabled()
+
+
+def test_the_window_button_goes_back_to_normal_when_nothing_is_missing(window):
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    _ready_to_update(window)
+
+    assert window._btn_update.text() == "Update now…"
+
+
+def test_several_missing_sources_get_the_plural_label(window):
+    _ready_to_update(
+        window, failed_repos=[("vlc", "VLC"), ("packman", "Packman")]
+    )
+
+    assert _banner_button(window) == "Update without them"
+    assert window._btn_update.text() == "Update with them anyway"
+
+
+def test_pressing_it_asks_nothing_and_keeps_the_source_in(window, monkeypatch):
+    _ready_to_update(window, failed_repos=[("vlc", "VLC")])
+    started = {}
+    monkeypatch.setattr(
+        type(window._runner), "start", lambda self, steps: started.setdefault(
+            "steps", steps
+        )
+    )
+
+    def never(self):
+        raise AssertionError("asked again after the label already said so")
+
+    monkeypatch.setattr(QMessageBox, "exec", never)
+    window._btn_update.click()
+
+    assert "--without-unreachable" not in started["steps"][0].argv
+
+
+def test_the_question_survives_where_the_banner_is_saying_something_else(
+    window, monkeypatch
+):
+    """A held package lock takes the banner's one button, so nothing has
+    offered to leave the source out and the window's button still has the
+    question to ask."""
+    _apply(
+        window,
+        packages=_some_packages(43),
+        failed_repos=[("vlc", "VLC")],
+        error="System management is locked by pid 5899",
+        locked=True,
+    )
+    window._chk_system.setChecked(True)
+
+    assert _banner_button(window) == "Wait for it and retry"
+    assert window._btn_update.text() == "Update now…"
+
+    asked = _press_update(window, monkeypatch, "leave out")
+    assert "--without-unreachable" in asked["argv"]
+
+
+# --------------------------------------------------------------------------- #
+# "Try again tomorrow".
+#
+# A source that cannot be reached is usually somebody else's server having a bad
+# afternoon. Until it comes back there is nothing useful to do, so the user can
+# stop being asked about it: the tray goes back to idle and the headline says
+# when the app will look again.
+# --------------------------------------------------------------------------- #
+
+
+def _tomorrow() -> str:
+    return (date.today() + timedelta(days=1)).strftime("%d/%m/%Y")
+
+
+def _defer(win):
+    """Press "Try again tomorrow"."""
+    win._banner_btn_alt.click()
+
+
+def test_an_unreachable_source_offers_to_put_it_off(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+
+    assert window._banner_btn_alt.isVisible() or not window._banner_btn_alt.isHidden()
+    assert window._banner_btn_alt.text() == "Try again tomorrow"
+    # Beside the other one, not instead of it.
+    assert _banner_button(window) == "Update without VLC"
+
+
+def test_putting_it_off_stores_tomorrow_and_says_so(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    assert SettingsStore().deferred_until() == date.today() + timedelta(days=1)
+    assert window._headline.text() == f"Update check deferred until {_tomorrow()}"
+
+
+def test_putting_it_off_takes_the_tray_back_to_idle(window):
+    seen = []
+    window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    state, tooltip = seen[-1]
+    assert state is TrayState.IDLE
+    assert tooltip == f"Update check deferred until {_tomorrow()}"
+
+
+def test_the_banner_shrinks_to_one_line_once_it_is_put_off(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    text = window._banner_label.text()
+    assert text == (
+        f"VLC could not be reached. This was put off until {_tomorrow()}."
+    )
+    # Nothing left to press: "Check now" is the way back.
+    assert _banner_button(window) == ""
+    assert window._banner_btn_alt.isHidden()
+    # And the window's own button goes back to its ordinary label.
+    assert window._btn_update.text() == "Update now…"
+
+
+def test_several_sources_are_named_in_the_one_line(window):
+    _apply(
+        window,
+        packages=_some_packages(42),
+        failed_repos=[("vlc", "VLC"), ("packman", "Packman")],
+    )
+    _defer(window)
+
+    assert "2 of your software sources (VLC, Packman)" in window._banner_label.text()
+
+
+def test_checking_now_clears_it(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+    window._on_check_clicked()
+
+    assert SettingsStore().deferred_until() is None
+
+
+def test_a_clean_check_lifts_it_by_itself(window):
+    """The background check keeps running. If the source comes back there is
+    nothing left to hide from, so the updates stop being hidden."""
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    _apply(window, packages=_some_packages(42))
+
+    assert SettingsStore().deferred_until() is None
+    assert window._headline.text() == "42 update(s) available"
+
+
+def test_a_check_that_still_fails_keeps_it(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+
+    assert SettingsStore().deferred_until() is not None
+    assert window._headline.text() == f"Update check deferred until {_tomorrow()}"
+
+
+def test_a_failed_check_is_not_hidden_behind_a_deferral(window):
+    """Putting off a source that cannot be reached is not the same as putting
+    off a check that did not run at all."""
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    _apply(
+        window,
+        failed_repos=[("vlc", "VLC")],
+        error="System management is locked by pid 5899",
+        locked=True,
+    )
+
+    assert window._headline.text() == "Could not check for system updates"
+    assert "5899" in window._banner_label.text()

@@ -11,7 +11,13 @@ set -eu
 
 PREFIX="${PREFIX:-/usr}"
 DESTDIR="${DESTDIR:-}"
-SITELIB="${SITELIB:-$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')}"
+# Pinned to PREFIX rather than left to sysconfig's default. A bare
+# get_path("purelib") answers with the *user-local* tree, /usr/local/lib/...,
+# which is not on sys.path before /usr/lib/... - so an install there is
+# shadowed by any copy the RPM left behind and silently does nothing. Passing
+# base/platbase gives the same answer as the spec's %{python3_sitelib}, which
+# is what the two have to agree on.
+SITELIB="${SITELIB:-$(python3 -c 'import sys, sysconfig; print(sysconfig.get_path("purelib", vars={"base": sys.argv[1], "platbase": sys.argv[1]}))' "$PREFIX")}"
 
 BINDIR="$PREFIX/bin"
 LIBEXECDIR="$PREFIX/libexec/tumbleweed-updater"

@@ -38,13 +38,21 @@ def main_env(monkeypatch):
     # override this again.
     monkeypatch.setattr(helper_check, "_failed_sources", lambda output: [])
     monkeypatch.setattr(helper_check.time, "sleep", lambda s: None)
+    # Would otherwise look for the real note under /var/lib. The ordering test
+    # below overrides this again.
+    order = []
+    monkeypatch.setattr(
+        helper_check.repos,
+        "restore_remembered",
+        lambda *a, **k: order.append("restore") or [],
+    )
     written = {}
     monkeypatch.setattr(
         helper_check.statusfile,
         "write",
         lambda status: written.__setitem__("status", status),
     )
-    return {"written": written, "waits": wait_calls}
+    return {"written": written, "waits": wait_calls, "order": order}
 
 
 def test_refresh_reports_locked_on_exit_code_7(monkeypatch):
@@ -247,3 +255,24 @@ def test_failed_sources_gives_up_quietly_when_the_list_is_unreadable(monkeypatch
         lambda: helper_check.repos.ReposResult(error="zypper is not installed"),
     )
     assert helper_check._failed_sources("[vlc|http://x/] Failed") == []
+
+
+def test_a_source_left_off_by_an_interrupted_upgrade_is_put_back_first(
+    monkeypatch, main_env
+):
+    """helper/run-update switches an unreachable source off for the length of
+    one upgrade. A power cut in the middle would leave it off for good, so the
+    next check finishes the job - and does it before the refresh, or the
+    refresh would report on the wrong set of sources."""
+    order = main_env["order"]
+    monkeypatch.setattr(
+        helper_check,
+        "_refresh",
+        lambda: (order.append("refresh"), (None, False, ""))[1],
+    )
+    monkeypatch.setattr(
+        helper_check.sources, "check_zypper", lambda: sources.ZypperResult()
+    )
+
+    assert helper_check.main() == 0
+    assert order == ["restore", "refresh"]

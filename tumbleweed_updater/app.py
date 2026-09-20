@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 from PySide6.QtCore import QFileSystemWatcher, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -30,6 +31,35 @@ def _should_ask_about_notifier(
     if already_off:
         return False  # nothing to ask; the answer is recorded without asking
     return not prefs.plasma_notifier_asked
+
+
+def _should_notify(
+    *,
+    notify: bool,
+    notify_on_updates: bool,
+    total: int,
+    last_total: int,
+    deferred,
+) -> bool:
+    """Whether to pop "N update(s) available" on the desktop.
+
+    Only when the count has actually changed, and never for the first status
+    the app sees (*last_total* < 0), which would otherwise fire a notification
+    every launch for updates the user already knows about.
+
+    *deferred* is the day the user put the check off until, or None. While one
+    is in force this stays quiet: a tray icon that has gone back to idle and a
+    notification saying there are 42 updates cannot both be right.
+    """
+    if deferred is not None:
+        return False
+    return (
+        notify
+        and notify_on_updates
+        and total > 0
+        and total != last_total
+        and last_total >= 0
+    )
 
 
 def _socket_path() -> str:
@@ -118,6 +148,12 @@ class Application:
 
         self.window = MainWindow(self.settings, self.privileged)
         self.window.stateChanged.connect(self._on_state)
+        # Guarded the way tray.py guards the same signal: it arrived in Qt 6.5
+        # and this is the only thing that keeps the icon honest across a theme
+        # change.
+        hints = QGuiApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(lambda _=None: self._refresh_app_icon())
         self.window.settingsApplied.connect(self._on_settings_applied)
         self.window.restartRequested.connect(self.restart)
         self.window.quitRequested.connect(self._quit)
@@ -207,15 +243,16 @@ class Application:
         status = read_status()
         if status is None:
             return
+        # Before the deferral is read: this can clear it, when the check comes
+        # back with every source reachable.
         self.window.apply_zypper_status(status)
         total = status.total
-        prefs = self.settings.load()
-        if (
-            notify
-            and prefs.notify_on_updates
-            and total > 0
-            and total != self._last_total
-            and self._last_total >= 0
+        if _should_notify(
+            notify=notify,
+            notify_on_updates=self.settings.load().notify_on_updates,
+            total=total,
+            last_total=self._last_total,
+            deferred=self.settings.deferred_until(),
         ):
             self.tray.showMessage(
                 APP_NAME,
@@ -241,6 +278,19 @@ class Application:
 
     def _on_settings_applied(self) -> None:
         self.tray.reload()
+        self.window.reload_icon()
+
+    def _refresh_app_icon(self) -> None:
+        """Repaint the app's icon in the current theme's text colour.
+
+        The tray does this for itself; the window and the task switcher get it
+        from here. Without it "follows the system theme" would mean "was the
+        right colour when the app started", and switching Plasma to a light
+        theme would leave a white mark on a white bar.
+        """
+        style = self.settings.load().icon_style
+        self.qt.setWindowIcon(window_icon(style))
+        self.window.reload_icon()
 
     def _confirm_abort(self, question: str) -> bool:
         return (

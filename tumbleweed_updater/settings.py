@@ -9,6 +9,7 @@ cadence the user picked. The label->schedule mapping lives in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from PySide6.QtCore import QSettings
 
@@ -208,6 +209,40 @@ class SettingsStore:
     def set_disabled_sources(self, aliases: list[str]) -> None:
         # Sorted and de-duplicated so the stored value does not churn.
         self._s.setValue("sources/disabledByUs", sorted(set(aliases)))
+        self._s.sync()
+
+    # -- putting the check off for a day ---------------------------------- #
+    #
+    # A source that cannot be reached is usually somebody else's server having
+    # a bad afternoon. Until it comes back there is nothing useful to do, so
+    # the window offers to stop asking until tomorrow. A date, not a timestamp,
+    # because a date is what the window shows the user.
+
+    def deferred_until(self) -> date | None:
+        """The day the check is deferred until, or None if it is not.
+
+        None for unset, unparseable, and - the case that does the work - a day
+        that has already arrived. An expired deferral is deleted here rather
+        than left to rot in the config file, so the first read after midnight
+        both reports the truth and tidies up.
+        """
+        raw = self._s.value("check/deferredUntil", "", str)
+        try:
+            day = date.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            if raw:
+                self.set_deferred_until(None)
+            return None
+        if day <= date.today():
+            self.set_deferred_until(None)
+            return None
+        return day
+
+    def set_deferred_until(self, day: date | None) -> None:
+        if day is None:
+            self._s.remove("check/deferredUntil")
+        else:
+            self._s.setValue("check/deferredUntil", day.isoformat())
         self._s.sync()
 
 
