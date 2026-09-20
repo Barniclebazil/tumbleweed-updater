@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.10.0
+Version:        0.11.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sun Sep 20 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.11.0
+- Updates now install even when a software source can't be reached: the app refreshes what it can and upgrades from what is already on this computer, rather than switching that source off. The update button also waits for a check in progress instead of colliding with it, and the tray icon stays quiet while looking for updates.
+
 * Sun Sep 20 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.10.0
 - Updates no longer stall when a software source can't be reached: the app explains what happened in plain language, offers to leave that source out of one update and put it back afterwards, or to put the whole thing off until tomorrow.
 
