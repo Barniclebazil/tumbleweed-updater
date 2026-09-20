@@ -95,6 +95,16 @@ class Prefs:
     term_fg: str = DEFAULT_TERM_FG
     # Tray/window icon style (key of ICON_STYLES).
     icon_style: str = DEFAULT_ICON_STYLE
+    # Wait for PackageKit to finish with the package lock instead of failing
+    # straight away. The scheduled check always does this: helper/check runs as
+    # root from a systemd timer with no session, so it cannot read these
+    # preferences.
+    wait_for_packagekit: bool = True
+    # Whether the one-time question about Plasma's own update notifier has been
+    # answered. Whether it is actually switched off is not stored here - that
+    # is read from the autostart override on disk, since the user can also
+    # change it from Plasma's own settings.
+    plasma_notifier_asked: bool = False
 
 
 class SettingsStore:
@@ -144,6 +154,12 @@ class SettingsStore:
                 RESET_AFTER_UPDATE,
                 d.reset_after_update,
             ),
+            wait_for_packagekit=_as_bool(
+                s.value("zypper/waitForPackagekit", d.wait_for_packagekit)
+            ),
+            plasma_notifier_asked=_as_bool(
+                s.value("ui/plasmaNotifierAsked", d.plasma_notifier_asked)
+            ),
         )
 
     def save(self, p: Prefs) -> None:
@@ -164,6 +180,8 @@ class SettingsStore:
         s.setValue("update/cleanup", p.cleanup_after_update)
         s.setValue("update/rebootAction", p.reboot_action)
         s.setValue("update/resetAfter", p.reset_after_update)
+        s.setValue("zypper/waitForPackagekit", p.wait_for_packagekit)
+        s.setValue("ui/plasmaNotifierAsked", p.plasma_notifier_asked)
         s.sync()
 
 

@@ -77,6 +77,22 @@ def test_cleanup_flag_added_to_argv(app):
     assert "--cleanup" not in without[0].argv
 
 
+def test_packagekit_wait_opt_out_added_to_argv(app):
+    # The helper waits by default, so only the opt-out is ever passed - which
+    # is also why the systemd timer (no arguments) always waits.
+    term = TerminalWidget()
+    runner = UpdateRunner(term)
+    default = runner.build_queue(do_zypper=True, dup_args=["--x"])
+    opted_out = runner.build_queue(
+        do_zypper=True, dup_args=["--x"], wait_for_packagekit=False
+    )
+    flag = "--no-wait-for-packagekit"
+    assert flag not in default[0].argv
+    assert flag in opted_out[0].argv
+    # It has to reach the helper before dupargs sees the rest.
+    assert opted_out[0].argv.index(flag) < opted_out[0].argv.index("--x")
+
+
 def test_queue_stops_on_failure(app):
     term = TerminalWidget()
     term.resize(600, 300)

@@ -6,8 +6,9 @@ embedded terminal so the user answers zypper's prompts directly. The child
 processes inherit this process's terminal, which is what keeps zypper
 interactive and coloured.
 
-Usage: run-update [--cleanup] [zypper dup options...]
-    --cleanup   run "zypper clean" after a successful upgrade
+Usage: run-update [--cleanup] [--no-wait-for-packagekit] [zypper dup options...]
+    --cleanup                  run "zypper clean" after a successful upgrade
+    --no-wait-for-packagekit   start even if PackageKit holds the package lock
 
 Every option is checked against tumbleweed_updater.dupargs before zypper sees
 it: polkit matches only the path of this script, and the update action keeps
@@ -30,6 +31,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
+from tumbleweed_updater import packagekit  # noqa: E402
 from tumbleweed_updater.dupargs import unknown_args  # noqa: E402
 
 # 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
@@ -48,9 +50,15 @@ def _run(argv: list[str]) -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    # Our own options are stripped before the allow-list check, so that
+    # dupargs only ever sees things it is meant to judge.
     cleanup = False
     if args and args[0] == "--cleanup":
         cleanup = True
+        args = args[1:]
+    wait_for_pk = True
+    if args and args[0] == "--no-wait-for-packagekit":
+        wait_for_pk = False
         args = args[1:]
 
     rejected = unknown_args(args)
@@ -66,6 +74,29 @@ def main() -> int:
     os.environ.setdefault("LANG", "C.UTF-8")
     os.environ["PAGER"] = "cat"
     os.environ["SYSTEMD_PAGER"] = "cat"
+
+    if wait_for_pk:
+        # PackageKit takes the zypp lock whenever something wakes it, and
+        # zypper then refuses to start at all. Waiting turns a failed upgrade
+        # into a delayed one. Nothing is cancelled or killed: PackageKit is
+        # left to finish on its own.
+        holder = packagekit.lock_holder()
+        if holder is not None:
+            _heading(
+                "Waiting for the package lock: "
+                + packagekit.describe_holder(holder)
+            )
+            _, detail = packagekit.wait_for_lock(
+                timeout_s=packagekit.UPDATE_WAIT_S,
+                # A refresh can run for minutes, so say something periodically
+                # rather than letting the terminal look hung.
+                on_progress=lambda secs: _heading(
+                    f"Still waiting for PackageKit ({secs:.0f}s)"
+                ),
+            )
+            # Not fatal either way: zypper's own message is clearer than
+            # anything printed here, and the user is watching a live terminal.
+            _heading(detail)
 
     _heading("Refreshing repositories")
     rc = _run(["zypper", "refresh"])

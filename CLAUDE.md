@@ -85,6 +85,43 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   first non-zero exit.
 * **`app.py`** owns the `QApplication`, single-instance `QLocalServer`, tray,
   window, and `PrivilegedRunner`. `MainWindow.stateChanged` → `TrayIcon`.
+* **`packagekit.py`** (Qt-free) reads `/run/zypp.pid` and waits on it. Measured
+  behaviour, not assumed: packagekitd takes the lock when a transaction starts
+  and releases it the instant that transaction ends (15-30s for a refresh); an
+  idle daemon does **not** hold it, even though it lives on for
+  `ShutdownTimeout`. So **asking it to quit is useless and is not implemented**
+  — `SuggestDaemonQuit` returns success immediately but is ignored while any
+  transaction is listed, which is exactly when the lock is held; and
+  `Transaction.Cancel` needs `cancel-foreign`, which is `auth_admin_keep` even
+  for an active session, so it would raise a password prompt to save seconds.
+  `wait_for_lock()` waits, and only for PackageKit: another `zypper` can hold
+  the lock for many minutes, so that case returns at once naming the holder.
+  libzypp **truncates** the pid file rather than unlinking it, so "free" means
+  missing, empty, unparseable, or a pid with no `/proc` entry. Match on
+  `/proc/<pid>/cmdline`, never `comm`: libzypp renames packagekitd's main
+  thread to `Zypp-main`, so `pgrep packagekitd` finds nothing. Both helpers take
+  `--no-wait-for-packagekit` (exact string match, since polkit pins the path but
+  not argv); the systemd timer passes nothing, so the scheduled check always
+  waits, which is why the Settings toggle only governs GUI-initiated runs.
+  `helper/check` puts `still_locked` into `ZypperResult.locked`, which
+  `statusfile` carries to the GUI so `MainWindow._render()` can give the orange
+  banner its "Wait for it and retry" button (`workers.LockWaiter` keeps the poll
+  off the UI thread). The retry loop (5 attempts, 10s apart) is the real fix for
+  the failure this was built for; not running the notifier at all is the better
+  one.
+* **`autostart.py`** (Qt-free) owns both this app's own XDG autostart entry and
+  the `Hidden=true` override that switches off Plasma's Discover update notifier
+  — the only thing on a stock Plasma install that wakes PackageKit. `app.py`
+  asks about it once (`_should_ask_about_notifier`, gated on
+  `MainWindow.firstShown` so a `--tray` start does not pop a modal over an empty
+  desktop) and `settingsdialog.py` exposes it; the tickbox reads the override
+  **from disk**, not `QSettings`, since the user can also flip it in System
+  Settings. `notifier_pids()` matches the basename of `argv[0]` for our own uid
+  only: `pgrep -f` would match an editor with the source open, and
+  `/proc/<pid>/comm` truncates to 15 characters. SIGTERM only — Plasma's
+  generated unit has `Restart=no`, and the override covers the next login anyway.
+  Masking `packagekit.service` was considered and rejected: it breaks Discover's
+  install/remove/repositories and `packagekit-offline-update.service`.
 * **`snapshots.py`** is pure/stdlib-only (no Qt), parsing `snapper --jsonout
   list` (which nests snapshots under the config name, e.g. `{"root": [...]}`,
   and uses hyphenated keys like `pre-number`) and `snapper status <n1>..<n2>`
@@ -146,8 +183,9 @@ as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
 ## Conventions
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
-  `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py` must stay Qt-free
-  (imported by the root helpers).
+  `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py`, `packagekit.py`,
+  `autostart.py` must stay Qt-free (imported by the root helpers, or by both
+  the dialog and `app.py`).
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog

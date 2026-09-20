@@ -157,3 +157,25 @@ def test_free_text_options_do_not_duplicate_the_toggles(app):
 
     flag = Prefs(dup_non_interactive=True, zypper_dup_args="-y --details")
     assert dup_args_from_prefs(flag) == ["-y", "--auto-agree-with-licenses", "--details"]
+
+
+def test_packagekit_and_notifier_defaults(app):
+    store = SettingsStore()
+    p = store.load()
+    # Both features are on out of the box; the notifier question is unanswered.
+    assert p.wait_for_packagekit is True
+    assert p.plasma_notifier_asked is False
+
+
+def test_packagekit_and_notifier_round_trip(app):
+    store = SettingsStore()
+    p = store.load()
+    p.wait_for_packagekit = False
+    p.plasma_notifier_asked = True
+    store.save(p)
+
+    # QSettings hands booleans back as the strings "false"/"true" here, which
+    # is what _as_bool exists for.
+    loaded = store.load()
+    assert loaded.wait_for_packagekit is False
+    assert loaded.plasma_notifier_asked is True

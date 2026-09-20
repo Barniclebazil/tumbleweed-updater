@@ -32,7 +32,7 @@ from .sources import Action, UpdateStatus, human_bytes
 from .statusfile import read as read_status
 from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
-from .workers import FlatpakChecker
+from .workers import FlatpakChecker, LockWaiter
 
 _ACTION_LABELS = {
     Action.UPGRADE: "upgrade",
@@ -70,6 +70,10 @@ class MainWindow(QMainWindow):
     settingsApplied = Signal()  # emitted after the settings dialog is accepted
     restartRequested = Signal()  # "Restart App" clicked on the update notice
     quitRequested = Signal()  # Menu -> Quit; the app owns the confirmation
+    # Emitted the first time the window is actually put on screen. Anything
+    # that must not pop up over an empty desktop (the app can start straight
+    # into the tray) waits for this.
+    firstShown = Signal()
 
     def __init__(self, settings: SettingsStore, privileged) -> None:
         super().__init__()
@@ -84,8 +88,11 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
+        self._has_been_shown = False
         self._flatpak = FlatpakChecker(self)
         self._flatpak.finished.connect(self._on_flatpak_result)
+        self._lock_waiter = LockWaiter(self)
+        self._lock_waiter.finished.connect(self._on_lock_wait_done)
 
         self._runner = UpdateRunner(self._terminal, self)
         self._runner.stepStarted.connect(lambda label: self._statusbar(label))
@@ -127,15 +134,24 @@ class MainWindow(QMainWindow):
         self._update_notice.hide()
         outer.addWidget(self._update_notice)
 
-        self._banner = QLabel()
-        self._banner.setWordWrap(True)
+        self._banner = QWidget()
+        self._banner.setAttribute(Qt.WA_StyledBackground, True)
+        self._banner.setStyleSheet(
+            "background: #f67400; color: white; border-radius: 4px;"
+        )
+        banner_l = QHBoxLayout(self._banner)
+        banner_l.setContentsMargins(8, 6, 8, 6)
+        self._banner_label = QLabel()
+        self._banner_label.setWordWrap(True)
         # These three carry zypper's and the helpers' own words. QLabel would
         # otherwise sniff them for markup and render it.
-        for label in (self._headline, self._subline, self._banner):
+        for label in (self._headline, self._subline, self._banner_label):
             label.setTextFormat(Qt.PlainText)
-        self._banner.setStyleSheet(
-            "background: #f67400; color: white; border-radius: 4px; padding: 6px;"
-        )
+        banner_l.addWidget(self._banner_label, 1)
+        self._banner_btn = QPushButton("Wait for it and retry")
+        self._banner_btn.clicked.connect(self._on_wait_for_lock_clicked)
+        self._banner_btn.hide()
+        banner_l.addWidget(self._banner_btn)
         self._banner.hide()
         outer.addWidget(self._banner)
 
@@ -265,6 +281,9 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if not self._has_been_shown:
+            self._has_been_shown = True
+            self.firstShown.emit()
 
     # -- checking ---------------------------------------------------------- #
 
@@ -273,8 +292,23 @@ class MainWindow(QMainWindow):
             return
         self._set_busy(True, "Checking for updates…")
         self.stateChanged.emit(TrayState.BUSY, "Checking for updates…")
-        self._privileged.run_check()
+        self._privileged.run_check(self._settings.load().wait_for_packagekit)
         self._flatpak.start()
+
+    def _on_wait_for_lock_clicked(self) -> None:
+        """Wait for PackageKit to finish, then check again."""
+        if self._privileged.check_running or self._runner.is_running:
+            return
+        self._banner_btn.setEnabled(False)
+        self._statusbar("Waiting for PackageKit to finish…")
+        self._lock_waiter.start()
+
+    def _on_lock_wait_done(self, free: bool, detail: str) -> None:
+        self._statusbar(detail)
+        # Re-check either way. helper/check waits again as root anyway, so a
+        # timeout here costs nothing, and the fresh status decides whether the
+        # button comes back.
+        self._on_check_clicked()
 
     def _on_check_finished(self, ok: bool, message: str) -> None:
         self._set_busy(False, "")
@@ -369,6 +403,7 @@ class MainWindow(QMainWindow):
             do_zypper=do_zypper,
             dup_args=dup_args,
             cleanup=prefs.cleanup_after_update,
+            wait_for_packagekit=prefs.wait_for_packagekit,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
         )
@@ -471,7 +506,9 @@ class MainWindow(QMainWindow):
         checked = _relative_time(self._status.generated)
         if z.error:
             self._headline.setText("Could not check for system updates")
-            self._show_banner(z.error)
+            # A lock is the one error the user can do something about from
+            # here, so it is the one that gets a button.
+            self._show_banner(z.error, action=z.locked)
         elif total == 0:
             self._headline.setText("Your system is up to date")
             self._hide_banner()
@@ -575,8 +612,10 @@ class MainWindow(QMainWindow):
     def _statusbar(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
 
-    def _show_banner(self, text: str) -> None:
-        self._banner.setText(text)
+    def _show_banner(self, text: str, action: bool = False) -> None:
+        self._banner_label.setText(text)
+        self._banner_btn.setVisible(action)
+        self._banner_btn.setEnabled(True)
         self._banner.show()
 
     def _hide_banner(self) -> None:

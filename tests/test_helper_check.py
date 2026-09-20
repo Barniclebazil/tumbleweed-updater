@@ -22,6 +22,28 @@ helper_check = importlib.util.module_from_spec(_spec)
 _loader.exec_module(helper_check)
 
 
+@pytest.fixture
+def main_env(monkeypatch):
+    """Isolate main(): no real argv, no real PackageKit, no real status file."""
+    monkeypatch.setattr(helper_check.sys, "argv", ["check"])
+    wait_calls = {"n": 0}
+
+    def fake_wait(*args, **kwargs):
+        wait_calls["n"] += 1
+        return True, "the package lock is free"
+
+    monkeypatch.setattr(helper_check.packagekit, "wait_for_lock", fake_wait)
+    monkeypatch.setattr(helper_check, "_snapshots_ok", lambda: True)
+    monkeypatch.setattr(helper_check.time, "sleep", lambda s: None)
+    written = {}
+    monkeypatch.setattr(
+        helper_check.statusfile,
+        "write",
+        lambda status: written.__setitem__("status", status),
+    )
+    return {"written": written, "waits": wait_calls}
+
+
 def test_refresh_reports_locked_on_exit_code_7(monkeypatch):
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -49,7 +71,7 @@ def test_refresh_preserves_multiline_message(monkeypatch):
     assert "line one" in error and "line two" in error
 
 
-def test_main_retries_then_succeeds(monkeypatch):
+def test_main_retries_then_succeeds(monkeypatch, main_env):
     calls = {"n": 0}
 
     def fake_refresh():
@@ -67,18 +89,17 @@ def test_main_retries_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(helper_check, "_refresh", fake_refresh)
     monkeypatch.setattr(helper_check.sources, "check_zypper", lambda: next(results))
-    monkeypatch.setattr(helper_check, "_snapshots_ok", lambda: True)
-    monkeypatch.setattr(helper_check.time, "sleep", lambda s: None)
-    written = {}
-    monkeypatch.setattr(
-        helper_check.statusfile, "write", lambda status: written.setdefault("status", status)
-    )
 
     assert helper_check.main() == 0
-    assert written["status"].zypper.error is None
+    status = main_env["written"]["status"]
+    assert status.zypper.error is None
+    assert status.zypper.locked is False
+    # Once per attempt, not once overall: PackageKit can be woken again in
+    # between by whatever woke it the first time.
+    assert main_env["waits"]["n"] == 2
 
 
-def test_main_gives_up_after_max_attempts(monkeypatch):
+def _always_locked(monkeypatch):
     monkeypatch.setattr(helper_check, "_refresh", lambda: ("locked", True))
     monkeypatch.setattr(
         helper_check.sources,
@@ -87,20 +108,41 @@ def test_main_gives_up_after_max_attempts(monkeypatch):
             error="System management is locked by pid 5899", locked=True
         ),
     )
-    monkeypatch.setattr(helper_check, "_snapshots_ok", lambda: True)
-    monkeypatch.setattr(helper_check.time, "sleep", lambda s: None)
-    written = {}
+
+
+def test_main_gives_up_after_max_attempts(monkeypatch, main_env):
+    _always_locked(monkeypatch)
+
+    assert helper_check.main() == 0
+    status = main_env["written"]["status"]
+    assert "5 automatic" in status.zypper.error
+    assert "pid 5899" in status.zypper.error
+    # The GUI needs this to know it may offer to free the lock.
+    assert status.zypper.locked is True
+    assert main_env["waits"]["n"] == helper_check._LOCK_MAX_ATTEMPTS
+
+
+def test_no_wait_flag_suppresses_the_wait(monkeypatch, main_env):
+    _always_locked(monkeypatch)
     monkeypatch.setattr(
-        helper_check.statusfile, "write", lambda status: written.setdefault("status", status)
+        helper_check.sys, "argv", ["check", "--no-wait-for-packagekit"]
     )
 
     assert helper_check.main() == 0
-    err = written["status"].zypper.error
-    assert "3 automatic" in err
-    assert "pid 5899" in err
+    assert main_env["waits"]["n"] == 0
 
 
-def test_main_does_not_retry_non_lock_errors(monkeypatch):
+def test_main_refuses_an_unknown_argument(monkeypatch, main_env, capsys):
+    # polkit pins the path of this helper but never its argv, so anything
+    # unrecognised is rejected rather than passed on.
+    monkeypatch.setattr(helper_check.sys, "argv", ["check", "--sneaky"])
+
+    assert helper_check.main() == 2
+    assert "--sneaky" in capsys.readouterr().err
+    assert "status" not in main_env["written"]
+
+
+def test_main_does_not_retry_non_lock_errors(monkeypatch, main_env):
     calls = {"n": 0}
 
     def fake_refresh():
@@ -113,11 +155,10 @@ def test_main_does_not_retry_non_lock_errors(monkeypatch):
         "check_zypper",
         lambda: sources.ZypperResult(error="Repository 'foo' is invalid.", locked=False),
     )
-    monkeypatch.setattr(helper_check, "_snapshots_ok", lambda: True)
     monkeypatch.setattr(
         helper_check.time, "sleep", lambda s: pytest.fail("should not sleep/retry")
     )
-    monkeypatch.setattr(helper_check.statusfile, "write", lambda status: None)
 
     helper_check.main()
     assert calls["n"] == 1
+    assert main_env["written"]["status"].zypper.locked is False

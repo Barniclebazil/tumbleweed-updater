@@ -34,6 +34,10 @@ def to_dict(status: UpdateStatus) -> dict:
         "snapshots_ok": status.snapshots_ok,
         "zypper": {
             "error": status.zypper.error,
+            # Added after SCHEMA 1 shipped. from_dict() reads it with .get, so
+            # an older status file simply reads back as "not locked" and an
+            # older reader ignores the key: no schema bump is needed.
+            "locked": status.zypper.locked,
             "download_size": status.zypper.download_size,
             "space_diff": status.zypper.space_diff,
             "need_reboot": status.zypper.need_reboot,
@@ -70,6 +74,7 @@ def from_dict(data: dict) -> UpdateStatus:
     f = data.get("flatpak", {}) or {}
     zres = ZypperResult(
         error=z.get("error"),
+        locked=bool(z.get("locked", False)),
         download_size=int(z.get("download_size", 0) or 0),
         space_diff=int(z.get("space_diff", 0) or 0),
         need_reboot=bool(z.get("need_reboot", False)),

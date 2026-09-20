@@ -1,6 +1,11 @@
 import os
 
-from tumbleweed_updater.app import _relaunch_argv, _socket_path
+from tumbleweed_updater.app import (
+    _relaunch_argv,
+    _should_ask_about_notifier,
+    _socket_path,
+)
+from tumbleweed_updater.settings import Prefs
 
 
 def test_relaunch_argv_checkout_module_run(monkeypatch):
@@ -35,3 +40,28 @@ def test_socket_lives_in_the_per_user_runtime_dir(monkeypatch, tmp_path):
     path = _socket_path()
     assert path == str(tmp_path / "tumbleweed-updater.instance")
     assert os.path.isabs(path)
+
+
+def test_notifier_question_is_asked_once_when_there_is_something_to_ask_about():
+    assert _should_ask_about_notifier(
+        Prefs(), system_entry=True, already_off=False
+    ) is True
+
+
+def test_notifier_question_is_not_repeated():
+    assert _should_ask_about_notifier(
+        Prefs(plasma_notifier_asked=True), system_entry=True, already_off=False
+    ) is False
+
+
+def test_notifier_question_is_skipped_without_a_system_entry():
+    # Not Plasma, or discover6-notifier simply is not installed.
+    assert _should_ask_about_notifier(
+        Prefs(), system_entry=False, already_off=False
+    ) is False
+
+
+def test_notifier_question_is_skipped_when_it_is_already_off():
+    assert _should_ask_about_notifier(
+        Prefs(), system_entry=True, already_off=True
+    ) is False

@@ -21,6 +21,7 @@ def _sample() -> UpdateStatus:
             download_size=1024,
             space_diff=-512,
             need_reboot=True,
+            locked=True,
         ),
         flatpak=FlatpakResult(
             refs=[FlatpakRef("org.kde.Kdenlive", "24.12", "stable", "flathub", "user")]
@@ -43,10 +44,25 @@ def test_roundtrip(tmp_path):
     assert loaded.zypper.need_reboot is True
     assert loaded.zypper.download_size == 1024
     assert loaded.zypper.space_diff == -512
+    assert loaded.zypper.locked is True
     assert loaded.flatpak.refs[0].installation == "user"
     assert loaded.snapshots_ok is False
     assert loaded.total == 3
     assert loaded.has_updates
+
+
+def test_from_dict_without_locked_defaults_to_false():
+    """A status file written before "locked" existed must still load."""
+    status = statusfile.from_dict(
+        {
+            "schema": 1,
+            "generated": "2026-09-10T12:00:00+00:00",
+            "snapshots_ok": True,
+            "zypper": {"error": "something else went wrong", "packages": []},
+            "flatpak": {"error": None, "refs": []},
+        }
+    )
+    assert status.zypper.locked is False
 
 
 def test_read_missing_returns_none(tmp_path):

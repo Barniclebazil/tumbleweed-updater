@@ -9,8 +9,9 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from tumbleweed_updater import autostart
 from tumbleweed_updater.settings import SettingsStore
-from tumbleweed_updater.settingsdialog import SettingsDialog, _desktop_exec
+from tumbleweed_updater.settingsdialog import SettingsDialog
 
 
 class _StubRunner(QObject):
@@ -81,22 +82,80 @@ def test_reset_after_update_saves_the_key_not_the_label(app, store):
     dialog.close()
 
 
-def test_autostart_exec_is_quoted_when_it_has_to_be():
-    assert _desktop_exec("/usr/bin/tumbleweed-updater") == "/usr/bin/tumbleweed-updater"
-    assert _desktop_exec("/home/a b/tw") == '"/home/a b/tw"'
-    assert _desktop_exec("/opt/$x/tw") == '"/opt/\\$x/tw"'
-
-
-def test_autostart_entry_follows_xdg_config_home(app, store, tmp_path, monkeypatch):
-    """Writing it must go through XDG_CONFIG_HOME, not a ~/.config pinned at
-    import time - otherwise a test run rewrites the real user's entry."""
-    monkeypatch.setattr(
-        "tumbleweed_updater.settingsdialog.shutil.which", lambda _n: "/usr/bin/tw"
+def _fake_plasma_entry(tmp_path, monkeypatch):
+    system = tmp_path / "xdg-autostart"
+    system.mkdir(exist_ok=True)
+    (system / autostart.PLASMA_NOTIFIER_ENTRY).write_text(
+        "[Desktop Entry]\nType=Application\nName=Discover\n"
+        "Exec=/usr/libexec/DiscoverNotifier --check-delay 20\n",
+        encoding="utf-8",
     )
-    target = tmp_path / "autostart" / "tumbleweed-updater.desktop"
+    monkeypatch.setattr(autostart, "SYSTEM_AUTOSTART_DIRS", (str(system),))
+    # Nothing in the tests may signal a real process.
+    monkeypatch.setattr(autostart, "stop_notifier", lambda *a, **k: 0)
 
-    SettingsDialog._apply_autostart(True)
-    assert "Exec=/usr/bin/tw --tray" in target.read_text(encoding="utf-8")
 
-    SettingsDialog._apply_autostart(False)
-    assert not target.exists()
+def test_notifier_row_is_absent_without_a_system_entry(app, store, tmp_path, monkeypatch):
+    monkeypatch.setattr(autostart, "SYSTEM_AUTOSTART_DIRS", (str(tmp_path / "none"),))
+    dialog = SettingsDialog(store, _StubRunner())
+    assert dialog._no_notifier is None
+    dialog._save()  # must not blow up on the missing widget
+    dialog.close()
+
+
+def test_notifier_tickbox_mirrors_the_override_on_disk(app, store, tmp_path, monkeypatch):
+    _fake_plasma_entry(tmp_path, monkeypatch)
+    autostart.set_hidden(autostart.PLASMA_NOTIFIER_ENTRY, True)
+
+    dialog = SettingsDialog(store, _StubRunner())
+    assert dialog._no_notifier.isChecked() is True
+    dialog.close()
+
+
+def test_saving_writes_and_removes_the_override(app, store, tmp_path, monkeypatch):
+    _fake_plasma_entry(tmp_path, monkeypatch)
+    override = tmp_path / "autostart" / autostart.PLASMA_NOTIFIER_ENTRY
+
+    dialog = SettingsDialog(store, _StubRunner())
+    dialog._no_notifier.setChecked(True)
+    dialog._save()
+    assert "Hidden=true" in override.read_text(encoding="utf-8")
+    assert store.load().plasma_notifier_asked is True
+    dialog.close()
+
+    dialog = SettingsDialog(store, _StubRunner())
+    dialog._no_notifier.setChecked(False)
+    dialog._save()
+    assert not override.exists()
+    dialog.close()
+
+
+def test_saving_does_not_reset_the_one_time_question(app, store, tmp_path, monkeypatch):
+    """_save() rebuilds Prefs field by field, so a field with no widget is one
+    typo away from being silently reset."""
+    monkeypatch.setattr(autostart, "SYSTEM_AUTOSTART_DIRS", (str(tmp_path / "none"),))
+    prefs = store.load()
+    prefs.plasma_notifier_asked = True
+    store.save(prefs)
+
+    dialog = SettingsDialog(store, _StubRunner())
+    dialog._save()
+    assert store.load().plasma_notifier_asked is True
+    dialog.close()
+
+
+def test_packagekit_wait_round_trips(app, store, tmp_path, monkeypatch):
+    monkeypatch.setattr(autostart, "SYSTEM_AUTOSTART_DIRS", (str(tmp_path / "none"),))
+
+    dialog = SettingsDialog(store, _StubRunner())
+    dialog._wait_for_pk.setChecked(False)
+    dialog._save()
+    assert store.load().wait_for_packagekit is False
+    dialog.close()
+
+    dialog = SettingsDialog(store, _StubRunner())
+    assert dialog._wait_for_pk.isChecked() is False
+    dialog._wait_for_pk.setChecked(True)
+    dialog._save()
+    assert store.load().wait_for_packagekit is True
+    dialog.close()

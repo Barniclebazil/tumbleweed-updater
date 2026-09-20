@@ -27,7 +27,7 @@ class _StubPrivileged(QObject):
     def check_running(self) -> bool:
         return False
 
-    def run_check(self) -> bool:
+    def run_check(self, wait_for_packagekit: bool = True) -> bool:
         return True
 
 
@@ -167,3 +167,74 @@ def test_clearing_from_the_terminal_collapses_the_panel(window):
 
     assert not _log_is_showing(window)
     assert "qt6-declarative-tools" not in window._terminal.buffer_text()
+
+
+# -- the lock banner ------------------------------------------------------- #
+
+
+def _status(**zypper_kwargs):
+    from tumbleweed_updater.sources import UpdateStatus, ZypperResult
+
+    return UpdateStatus(zypper=ZypperResult(**zypper_kwargs))
+
+
+def test_a_lock_error_offers_a_way_out(window):
+    window.apply_zypper_status(
+        _status(error="System management is locked by pid 3719", locked=True)
+    )
+    assert window._banner.isVisibleTo(window)
+    assert window._banner_btn.isVisibleTo(window._banner)
+    assert "3719" in window._banner_label.text()
+
+
+def test_an_ordinary_error_gets_no_button(window):
+    # Nothing the user can do from here, so no button to imply otherwise.
+    window.apply_zypper_status(_status(error="Repository 'foo' is invalid."))
+    assert window._banner.isVisibleTo(window)
+    assert not window._banner_btn.isVisibleTo(window._banner)
+
+
+def test_the_snapshot_warning_still_has_no_button(window):
+    from tumbleweed_updater.sources import Action, Package
+
+    status = _status(packages=[Package("bash", Action.UPGRADE, "2", "1", "x86_64")])
+    status.snapshots_ok = False
+    window.apply_zypper_status(status)
+    assert window._banner.isVisibleTo(window)
+    assert not window._banner_btn.isVisibleTo(window._banner)
+
+
+def test_waiting_disables_the_button_and_rechecks(window, monkeypatch):
+    started = {"n": 0}
+    monkeypatch.setattr(
+        "tumbleweed_updater.workers.LockWaiter.start",
+        lambda self: started.__setitem__("n", started["n"] + 1),
+    )
+    window.apply_zypper_status(_status(error="locked", locked=True))
+
+    window._on_wait_for_lock_clicked()
+    assert started["n"] == 1
+    assert window._banner_btn.isEnabled() is False
+
+
+def test_waiting_is_ignored_while_a_check_runs(window, monkeypatch):
+    started = {"n": 0}
+    monkeypatch.setattr(
+        "tumbleweed_updater.workers.LockWaiter.start",
+        lambda self: started.__setitem__("n", started["n"] + 1),
+    )
+    monkeypatch.setattr(
+        type(window._privileged), "check_running", property(lambda self: True)
+    )
+    window.apply_zypper_status(_status(error="locked", locked=True))
+
+    window._on_wait_for_lock_clicked()
+    assert started["n"] == 0
+
+
+def test_first_shown_fires_once(window):
+    seen = {"n": 0}
+    window.firstShown.connect(lambda: seen.__setitem__("n", seen["n"] + 1))
+    window.show_and_raise()
+    window.show_and_raise()
+    assert seen["n"] == 1

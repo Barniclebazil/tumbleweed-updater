@@ -11,6 +11,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from . import APP_ID, APP_NAME, __version__
+from . import autostart
 from .icons import window_icon
 from .mainwindow import MainWindow
 from .paths import STATUS_DIR, STATUS_FILE, installed_version
@@ -18,6 +19,17 @@ from .privileged import PrivilegedRunner
 from .settings import SettingsStore
 from .statusfile import read as read_status
 from .tray import TrayIcon, TrayState
+
+
+def _should_ask_about_notifier(
+    prefs, *, system_entry: bool, already_off: bool
+) -> bool:
+    """Whether to put the one-time question about Plasma's notifier."""
+    if not system_entry:
+        return False  # not Plasma, or discover6-notifier is not installed
+    if already_off:
+        return False  # nothing to ask; the answer is recorded without asking
+    return not prefs.plasma_notifier_asked
 
 
 def _socket_path() -> str:
@@ -131,6 +143,17 @@ class Application:
         self._reload_status(notify=False)
 
         prefs = self.settings.load()
+
+        # The question is asked once the window is actually on screen, which
+        # for a tray start is whenever the user first opens it. Connecting
+        # before the show below means a windowed start asks straight away, and
+        # a zero-delay timer keeps the modal out of the constructor, where it
+        # would open a nested event loop before the window has painted.
+        if not want_update:
+            self.window.firstShown.connect(
+                lambda: QTimer.singleShot(0, self._maybe_ask_about_notifier)
+            )
+
         if want_update:
             QTimer.singleShot(0, self.window.trigger_update)
         elif not self._start_in_tray:
@@ -251,6 +274,63 @@ class Application:
         self._server.close()
         QLocalServer.removeServer(_SOCKET_NAME)
         os.execv(sys.executable, _relaunch_argv())
+
+    # -- Plasma's own update notifier -------------------------------------- #
+
+    def _maybe_ask_about_notifier(self) -> None:
+        """Offer once to switch off Plasma's update notifier.
+
+        It polls PackageKit, PackageKit takes the zypp lock when it starts, and
+        that is what makes checks and upgrades fail here. This app already
+        reports the same zypper and Flatpak updates, so the notifier is
+        redundant - but it belongs to another application, so it is never
+        switched off without asking.
+        """
+        prefs = self.settings.load()
+        already_off = autostart.is_hidden()
+        if not _should_ask_about_notifier(
+            prefs,
+            system_entry=autostart.is_installed(),
+            already_off=already_off,
+        ):
+            if already_off and not prefs.plasma_notifier_asked:
+                # Already off by the user's own hand: record it as answered.
+                prefs.plasma_notifier_asked = True
+                self.settings.save(prefs)
+            return
+
+        box = QMessageBox(self.window)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Plasma also checks for updates")
+        box.setText("Turn off Plasma's own update notifier?")
+        box.setInformativeText(
+            "Plasma's update notifier (part of Discover) looks for updates "
+            "through PackageKit. Starting PackageKit takes the system package "
+            "lock, which is what makes an update check fail with \"System "
+            "management is locked\".\n\n"
+            f"{APP_NAME} already tells you about the same zypper and Flatpak "
+            "updates, so the notifier is not needed as well.\n\n"
+            "Discover itself is not affected: you can still open it to install "
+            "and remove software and to manage repositories. You can change "
+            "this again at any time in Settings."
+        )
+        off = box.addButton("Turn it off", QMessageBox.AcceptRole)
+        keep = box.addButton("Keep it", QMessageBox.RejectRole)
+        box.setDefaultButton(off)
+        box.setEscapeButton(keep)
+        box.exec()
+
+        if box.clickedButton() is off:
+            ok, detail = autostart.suppress_plasma_notifier(True)
+            if not ok:
+                QMessageBox.warning(
+                    self.window, "Could not change the notifier", detail
+                )
+
+        # Dismissing counts as an answer, so the question is genuinely one-off.
+        prefs = self.settings.load()
+        prefs.plasma_notifier_asked = True
+        self.settings.save(prefs)
 
     def run(self) -> int:
         return self.qt.exec()

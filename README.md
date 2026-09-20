@@ -22,6 +22,53 @@ Features:
    window you are not still looking at the last update's output. When that
    happens is configurable in the settings, and you can clear the log yourself
    at any time with the "Hide log" button or the terminal's right-click menu.
+8. Copes with PackageKit. PackageKit holds the system package lock while it
+   runs, which is what makes `zypper` fail with "System management is locked".
+   The app waits for it instead of failing, and offers to switch off Plasma's
+   own update notifier, which is the thing that keeps waking it. Discover is
+   not affected either way.
+
+## PackageKit and Plasma's update notifier
+
+`zypper` needs the libzypp lock, and only one process may hold it. On a stock
+Plasma install the usual holder is `packagekitd`, which nothing starts
+deliberately: `packagekit.service` is D-Bus activated, so anything at all asking
+PackageKit a question launches it as root. It takes the lock when a job starts
+and releases it the moment that job finishes. A repository refresh has been
+measured here at anything from 15 seconds to over two minutes, depending on how
+much metadata it fetches. The app handles this in two ways.
+
+1. It waits rather than failing. Before each check and each upgrade it looks at
+   `/run/zypp.pid`, and if PackageKit is the holder it waits for it to finish.
+   This turns many failures into delays, though not all of them: a long refresh
+   can outlast the wait, and the check then reports the lock as it did before.
+   Nothing is cancelled, stopped or killed: PackageKit is left alone to complete
+   its job. Only PackageKit is waited for, so if your own `zypper` in a terminal
+   holds the lock the app says so straight away instead of sitting behind it.
+   Switch it off under Settings → "Wait for PackageKit instead of failing"; the
+   scheduled background check always waits, because it runs as a system service
+   and cannot read your settings.
+2. The first time the app runs it offers to switch off Plasma's own update
+   notifier, which is the only thing on a stock install that keeps waking
+   PackageKit in the first place. This app already reports the same `zypper` and
+   Flatpak updates. The setting lives under Settings → "Turn off Plasma's own
+   update notifier" and writes
+   `~/.config/autostart/org.kde.discover.notifier.desktop` with `Hidden=true`,
+   so to undo it by hand:
+
+   ```sh
+   rm ~/.config/autostart/org.kde.discover.notifier.desktop
+   ```
+
+   That takes effect at the next login. **Discover itself keeps working
+   normally.** Installing, removing and managing repositories are all
+   unaffected. What stops is Plasma's passive notification that updates exist.
+
+Asking PackageKit to quit is deliberately not attempted, because it does not
+work. `org.freedesktop.PackageKit.SuggestDaemonQuit` reports success but is
+ignored while any job is running, which is exactly and only when the lock is
+held. Cancelling the job outright would work, but needs an admin password every
+time. That is why item 2 above, and not item 1, is the real fix.
 
 ## Screenshots
 

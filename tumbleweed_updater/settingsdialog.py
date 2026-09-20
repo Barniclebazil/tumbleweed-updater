@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import shutil
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -25,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from . import autostart
 from .dupargs import FLAGS, VALUED, unknown_args
 from .icons import idle_icon, text_color
 from .intervals import INTERVALS
@@ -38,41 +36,6 @@ from .settings import (
     Prefs,
     SettingsStore,
 )
-
-def _autostart_path() -> str:
-    """Where the XDG autostart entry goes.
-
-    Read at call time and through XDG_CONFIG_HOME, rather than pinned to
-    ~/.config at import: that is what the spec says, and it keeps the tests out
-    of the real user's configuration.
-    """
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "autostart", "tumbleweed-updater.desktop")
-
-_AUTOSTART_BODY = """\
-[Desktop Entry]
-Type=Application
-Name=Tumbleweed Updater
-Exec={exec} --tray
-Icon=tumbleweed-updater
-Terminal=false
-X-GNOME-Autostart-enabled=true
-"""
-
-
-def _desktop_exec(path: str) -> str:
-    """Quote *path* for a desktop file's Exec= key.
-
-    Per the Desktop Entry spec: reserved characters mean the argument must be
-    double-quoted, and backslash, double quote, backtick and dollar are escaped
-    with a backslash inside those quotes.
-    """
-    if not any(c in path for c in ' \t\n"\'\\><~|&;$*?#()`'):
-        return path
-    escaped = path
-    for ch in "\\`$\"":
-        escaped = escaped.replace(ch, "\\" + ch)
-    return f'"{escaped}"'
 
 
 class _ColorButton(QPushButton):
@@ -145,8 +108,41 @@ class SettingsDialog(QDialog):
         form.addRow("", self._on_launch)
 
         self._autostart = QCheckBox("Start automatically at login (in the tray)")
-        self._autostart.setChecked(os.path.exists(_autostart_path()))
+        self._autostart.setChecked(autostart.own_autostart_enabled())
         form.addRow("", self._autostart)
+
+        self._wait_for_pk = QCheckBox("Wait for PackageKit instead of failing")
+        self._wait_for_pk.setChecked(self._prefs.wait_for_packagekit)
+        self._wait_for_pk.setToolTip(
+            "PackageKit takes the system package lock whenever something wakes "
+            "it, and zypper then refuses to run at all ('System management is "
+            "locked'). Its jobs are short, so waiting turns that failure into "
+            "a short delay.\n\n"
+            "Nothing is cancelled or stopped: PackageKit is left to finish.\n\n"
+            "The scheduled background check always waits, because it runs as a "
+            "system service and cannot read your settings."
+        )
+        form.addRow("", self._wait_for_pk)
+
+        # Only offered where there is something to suppress: no Plasma, no row.
+        # An empty-label QFormLayout row would leave a visible gap if it were
+        # merely hidden, so it is not built at all.
+        self._no_notifier = None
+        if autostart.is_installed():
+            self._no_notifier = QCheckBox("Turn off Plasma's own update notifier")
+            self._no_notifier.setChecked(autostart.is_hidden())
+            self._no_notifier.setToolTip(
+                "Plasma's update notifier (part of Discover) looks for updates "
+                "through PackageKit, which is what takes the package lock and "
+                "makes this app's checks and upgrades fail.\n\n"
+                "This app already tells you about the same zypper and Flatpak "
+                "updates, so the notifier is redundant.\n\n"
+                "Discover itself is unaffected: you can still open it to "
+                "install and remove software and to manage repositories. "
+                "Switching this back off restores the notifier at your next "
+                "login."
+            )
+            form.addRow("", self._no_notifier)
 
         self._notify = QCheckBox("Show a notification when updates appear")
         self._notify.setChecked(self._prefs.notify_on_updates)
@@ -389,9 +385,23 @@ class SettingsDialog(QDialog):
             cleanup_after_update=self._cleanup.isChecked(),
             reboot_action=self._reboot_action.currentData(),
             reset_after_update=self._reset_after.currentData(),
+            wait_for_packagekit=self._wait_for_pk.isChecked(),
+            # Carried over, not defaulted: Prefs() is rebuilt field by field
+            # here, so anything without a widget would silently reset.
+            plasma_notifier_asked=self._prefs.plasma_notifier_asked,
         )
-        self._store.save(new)
         self._apply_autostart(self._autostart.isChecked())
+
+        if self._no_notifier is not None:
+            want_off = self._no_notifier.isChecked()
+            if want_off != autostart.is_hidden():
+                ok, detail = autostart.suppress_plasma_notifier(want_off)
+                if not ok:
+                    QMessageBox.warning(self, "Could not change the notifier", detail)
+            # Deciding it here answers the one-time question for good.
+            new.plasma_notifier_asked = True
+
+        self._store.save(new)
 
         if new.check_interval != self._prefs.check_interval:
             # One connection per dialog, dropped again as soon as the answer
@@ -432,14 +442,4 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _apply_autostart(enabled: bool) -> None:
-        path = _autostart_path()
-        if enabled:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            exec_path = shutil.which("tumbleweed-updater") or "tumbleweed-updater"
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(_AUTOSTART_BODY.format(exec=_desktop_exec(exec_path)))
-        else:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+        autostart.set_own_autostart(enabled)

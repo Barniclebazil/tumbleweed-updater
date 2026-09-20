@@ -29,15 +29,19 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
-from tumbleweed_updater import sources, statusfile  # noqa: E402
+from tumbleweed_updater import packagekit, sources, statusfile  # noqa: E402
 from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
 
-# A resume-from-sleep race with PackageKit (triggered by NetworkManager
-# reconnecting) is the common case, and zypper fails fast when the lock is
-# held rather than waiting, so a handful of short retries costs little even
-# in the worst case.
-_LOCK_MAX_ATTEMPTS = 3  # 1 initial attempt + up to 2 retries
-_LOCK_RETRY_DELAY_S = 10
+# PackageKit holding the zypp lock is the common case: it is D-Bus activated,
+# so anything at all asking it a question starts it as root, and it keeps the
+# lock for as long as its transaction runs (15-30s for a refresh). zypper fails
+# fast when the lock is held rather than waiting, so waiting is up to us.
+_LOCK_MAX_ATTEMPTS = 5  # 1 initial attempt + up to 4 retries
+_LOCK_RETRY_DELAY_S = 10  # so: up to 40s of waiting, plus the per-attempt wait
+
+# The only argument this helper accepts. polkit's exec.path annotation pins the
+# program but never its argv, so it is matched exactly rather than parsed.
+_NO_WAIT = "--no-wait-for-packagekit"
 
 
 def _snapshots_ok() -> bool:
@@ -77,13 +81,31 @@ def _refresh() -> tuple[str | None, bool]:
 
 
 def main() -> int:
+    args = sys.argv[1:]
+    wait_for_pk = _NO_WAIT not in args
+    unknown = [a for a in args if a != _NO_WAIT]
+    if unknown:
+        sys.stderr.write(
+            "check: refusing unrecognised option(s): " + " ".join(unknown) + "\n"
+        )
+        return 2
+
     attempts = 0
     refresh_error: str | None = None
     zypper = sources.ZypperResult()
     still_locked = False
+    lock_detail = ""
 
     while True:
         attempts += 1
+        if wait_for_pk:
+            # Inside the loop, not once before it: whatever woke PackageKit the
+            # first time (Plasma's Discover notifier, typically) can wake it
+            # again between attempts. The wait is short because this loop's own
+            # retry delay already provides most of the patience.
+            _, lock_detail = packagekit.wait_for_lock(
+                timeout_s=packagekit.QUICK_WAIT_S
+            )
         refresh_error, refresh_locked = _refresh()
         zypper = sources.check_zypper()
 
@@ -95,11 +117,17 @@ def main() -> int:
     if zypper.error is None and refresh_error and not zypper.packages:
         zypper.error = f"repository refresh failed: {refresh_error}"
 
+    # check_zypper() only sees its own exit code, so a lock that showed up in
+    # the refresh alone would otherwise be lost. The GUI reads this to decide
+    # whether to offer the "free the lock" button.
+    zypper.locked = still_locked
+
     if still_locked and attempts > 1:
         elapsed = (attempts - 1) * _LOCK_RETRY_DELAY_S
+        suffix = f" ({lock_detail})" if lock_detail else ""
         zypper.error = (
             f"System management is still locked after {attempts} automatic "
-            f"attempts over the last {elapsed}s: {zypper.error}"
+            f"attempts over the last {elapsed}s{suffix}: {zypper.error}"
         )
 
     status = UpdateStatus(
