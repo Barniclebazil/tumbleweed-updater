@@ -20,7 +20,7 @@ jobs:
             rpm-build rpmlint \
             python-rpm-macros systemd-rpm-macros hicolor-icon-theme
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run the test suite
         env:
@@ -36,7 +36,7 @@ jobs:
       - name: Show the RPM's declared dependencies
         run: rpm -qp --requires dist/*.rpm
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpm
           path: dist/*.rpm
