@@ -96,11 +96,6 @@ class Prefs:
     term_fg: str = DEFAULT_TERM_FG
     # Tray/window icon style (key of ICON_STYLES).
     icon_style: str = DEFAULT_ICON_STYLE
-    # Wait for PackageKit to finish with the package lock instead of failing
-    # straight away. The scheduled check always does this: helper/check runs as
-    # root from a systemd timer with no session, so it cannot read these
-    # preferences.
-    wait_for_packagekit: bool = True
     # Whether the one-time question about Plasma's own update notifier has been
     # answered. Whether it is actually switched off is not stored here - that
     # is read from the autostart override on disk, since the user can also
@@ -155,9 +150,6 @@ class SettingsStore:
                 RESET_AFTER_UPDATE,
                 d.reset_after_update,
             ),
-            wait_for_packagekit=_as_bool(
-                s.value("zypper/waitForPackagekit", d.wait_for_packagekit)
-            ),
             plasma_notifier_asked=_as_bool(
                 s.value("ui/plasmaNotifierAsked", d.plasma_notifier_asked)
             ),
@@ -181,7 +173,6 @@ class SettingsStore:
         s.setValue("update/cleanup", p.cleanup_after_update)
         s.setValue("update/rebootAction", p.reboot_action)
         s.setValue("update/resetAfter", p.reset_after_update)
-        s.setValue("zypper/waitForPackagekit", p.wait_for_packagekit)
         s.setValue("ui/plasmaNotifierAsked", p.plasma_notifier_asked)
         s.sync()
 
@@ -210,6 +201,62 @@ class SettingsStore:
         # Sorted and de-duplicated so the stored value does not churn.
         self._s.setValue("sources/disabledByUs", sorted(set(aliases)))
         self._s.sync()
+
+    # -- how long a source has been unreachable --------------------------- #
+    #
+    # A source that cannot be reached for an afternoon is somebody else's
+    # server having a bad day and the window says so. One that has been gone
+    # for days is a different thing to be told, so the first day each source
+    # failed is remembered here and the window changes what it says once that
+    # is old enough.
+    #
+    # Stored as "<alias>|<ISO date>" strings, the same plain-list shape as
+    # disabled_sources() above and for the same reason: QSettings hands a
+    # one-element list back as a bare string, and this is the shape that copes.
+
+    def _unreachable_raw(self) -> list[str]:
+        value = self._s.value("sources/unreachableSince", [])
+        if isinstance(value, str):
+            return [value] if value else []
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value if str(v)]
+        return []
+
+    def note_unreachable_sources(self, aliases: list[str]) -> None:
+        """Record today for sources newly unreachable; forget the rest.
+
+        An alias already listed keeps the day it was first seen - that is the
+        whole point of the record. One that is not in *aliases* is dropped,
+        because the check just reached it. An empty list therefore clears
+        everything, which is what a clean check should do.
+        """
+        wanted = set(aliases)
+        known = {}
+        for entry in self._unreachable_raw():
+            alias, _, day = entry.partition("|")
+            if alias in wanted:
+                known[alias] = day
+        today = date.today().isoformat()
+        kept = sorted(
+            f"{alias}|{known.get(alias) or today}" for alias in wanted
+        )
+        if kept:
+            self._s.setValue("sources/unreachableSince", kept)
+        else:
+            self._s.remove("sources/unreachableSince")
+        self._s.sync()
+
+    def unreachable_since(self, alias: str) -> date | None:
+        """The day *alias* was first found unreachable, if it is on record."""
+        for entry in self._unreachable_raw():
+            name, _, day = entry.partition("|")
+            if name != alias:
+                continue
+            try:
+                return date.fromisoformat(day)
+            except ValueError:
+                return None
+        return None
 
     # -- putting the check off for a day ---------------------------------- #
     #

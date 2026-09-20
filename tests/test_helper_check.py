@@ -38,21 +38,13 @@ def main_env(monkeypatch):
     # override this again.
     monkeypatch.setattr(helper_check, "_failed_sources", lambda output: [])
     monkeypatch.setattr(helper_check.time, "sleep", lambda s: None)
-    # Would otherwise look for the real note under /var/lib. The ordering test
-    # below overrides this again.
-    order = []
-    monkeypatch.setattr(
-        helper_check.repos,
-        "restore_remembered",
-        lambda *a, **k: order.append("restore") or [],
-    )
     written = {}
     monkeypatch.setattr(
         helper_check.statusfile,
         "write",
         lambda status: written.__setitem__("status", status),
     )
-    return {"written": written, "waits": wait_calls, "order": order}
+    return {"written": written, "waits": wait_calls}
 
 
 def test_refresh_reports_locked_on_exit_code_7(monkeypatch):
@@ -133,14 +125,17 @@ def test_main_gives_up_after_max_attempts(monkeypatch, main_env):
     assert main_env["waits"]["n"] == helper_check._LOCK_MAX_ATTEMPTS
 
 
-def test_no_wait_flag_suppresses_the_wait(monkeypatch, main_env):
+def test_the_flag_that_used_to_skip_the_wait_is_now_refused(monkeypatch, main_env):
+    """Waiting is what this helper does; there is no option that says
+    otherwise, and polkit pins the path and not the argv, so anything at all
+    is refused rather than parsed."""
     _always_locked(monkeypatch)
     monkeypatch.setattr(
         helper_check.sys, "argv", ["check", "--no-wait-for-packagekit"]
     )
 
-    assert helper_check.main() == 0
-    assert main_env["waits"]["n"] == 0
+    assert helper_check.main() == 2
+    assert main_env["written"] == {}
 
 
 def test_main_refuses_an_unknown_argument(monkeypatch, main_env, capsys):
@@ -257,22 +252,42 @@ def test_failed_sources_gives_up_quietly_when_the_list_is_unreadable(monkeypatch
     assert helper_check._failed_sources("[vlc|http://x/] Failed") == []
 
 
-def test_a_source_left_off_by_an_interrupted_upgrade_is_put_back_first(
-    monkeypatch, main_env
-):
-    """helper/run-update switches an unreachable source off for the length of
-    one upgrade. A power cut in the middle would leave it off for good, so the
-    next check finishes the job - and does it before the refresh, or the
-    refresh would report on the wrong set of sources."""
-    order = main_env["order"]
+def test_a_check_stands_down_while_our_own_upgrade_runs(monkeypatch, main_env):
+    """A check during a zypper dup can tell the user nothing they do not
+    already know, and the alternative is what used to happen: the retry loop
+    spent 40s losing to our own upgrade, then replaced a good status file with
+    a failure and the window threw its update list away. The GUI starts a fresh
+    check the moment an upgrade ends."""
     monkeypatch.setattr(
-        helper_check,
-        "_refresh",
-        lambda: (order.append("refresh"), (None, False, ""))[1],
+        helper_check.packagekit, "lock_holder", lambda *a, **k: (38917, "zypper")
     )
+    monkeypatch.setattr(
+        helper_check.packagekit, "holder_is_ours", lambda holder, paths, *a, **k: True
+    )
+    monkeypatch.setattr(
+        helper_check, "_refresh", lambda: pytest.fail("should not have refreshed")
+    )
+
+    assert helper_check.main() == 0
+    assert main_env["written"] == {}
+
+
+def test_a_check_runs_as_usual_for_anybody_elses_lock(monkeypatch, main_env):
+    monkeypatch.setattr(
+        helper_check.packagekit, "lock_holder", lambda *a, **k: (999, "zypper")
+    )
+    monkeypatch.setattr(
+        helper_check.packagekit, "holder_is_ours", lambda holder, paths, *a, **k: False
+    )
+    monkeypatch.setattr(helper_check, "_refresh", lambda: (None, False, ""))
     monkeypatch.setattr(
         helper_check.sources, "check_zypper", lambda: sources.ZypperResult()
     )
 
     assert helper_check.main() == 0
-    assert order == ["restore", "refresh"]
+    assert "status" in main_env["written"]
+
+
+def test_the_upgrade_helper_path_covers_installed_and_checkout():
+    assert helper_check._OUR_UPGRADE
+    assert all(p.endswith("run-update") for p in helper_check._OUR_UPGRADE)

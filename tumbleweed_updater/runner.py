@@ -53,8 +53,6 @@ class UpdateRunner(QObject):
         do_zypper: bool,
         dup_args: list[str] | None = None,
         cleanup: bool = False,
-        wait_for_packagekit: bool = True,
-        without_unreachable: bool = False,
         do_flatpak_system: bool = False,
         do_flatpak_user: bool = False,
     ) -> list[Step]:
@@ -63,13 +61,6 @@ class UpdateRunner(QObject):
             argv = ["pkexec", resolve_helper(HELPER_RUN_UPDATE)]
             if cleanup:
                 argv.append("--cleanup")
-            if not wait_for_packagekit:
-                argv.append("--no-wait-for-packagekit")
-            if without_unreachable:
-                # A bare flag, never a source name: which sources cannot be
-                # reached is the helper's own finding, made as root. See
-                # helper/run-update.
-                argv.append("--without-unreachable")
             argv += dup_args or []
             steps.append(Step("Upgrading the system with zypper dup", argv))
         if do_flatpak_system:

@@ -14,10 +14,12 @@ Two things live here that the rest of the app needs:
   reach. zypper has no machine-readable refresh output, so this reads the human
   one, anchored on the one part of it that is not translated (see below).
 
-A third pair, :func:`remember_to_restore` and :func:`restore_remembered`, is
-the crash net for ``helper/run-update --without-unreachable``: it switches an
-unreachable source off for the length of one upgrade and back on afterwards,
-and this is what finishes the job if the machine dies in between.
+Nothing here switches a source off on the user's behalf any more. A source
+that cannot be reached is got past in ``helper/run-update`` by refreshing
+first and running the dup with ``--no-refresh``; disabling it would only
+orphan everything installed from it. :func:`set_enabled` stays for
+``helper/repos``, which exists so anyone who pressed the old button has a way
+back.
 
 The user-facing word for a repository is "software source"; the strings the
 window shows are built in :mod:`tumbleweed_updater.mainwindow`, from the
@@ -26,15 +28,11 @@ display *name* here, never the alias.
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import subprocess
-import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
-from .paths import SOURCES_TO_RESTORE
 from .sources import ZYPPER_EXIT_ZYPP_LOCKED
 
 
@@ -199,88 +197,3 @@ def set_enabled(alias: str, enabled: bool, timeout: int = 30) -> str | None:
         stderr = (proc.stderr or proc.stdout).strip().splitlines()
         return stderr[-1] if stderr else f"zypper exited {proc.returncode}"
     return None
-
-
-# --------------------------------------------------------------------------- #
-# Putting back a source that was switched off for one upgrade.
-#
-# helper/run-update switches an unreachable source off, runs the dup, and
-# switches it back on in a finally block. That covers every ending the process
-# gets to see, including the Ctrl-C the Cancel button sends. It does not cover
-# a power cut or a SIGKILL, and the consequence of those would be a source left
-# off for good with nothing in the window to say so - the "switch it back on"
-# offer keys off SettingsStore.disabled_sources(), which is the GUI's own
-# record and knows nothing about this. Hence a note on disk, written before the
-# source is touched and removed once it is back, that helper/check picks up on
-# its next run.
-# --------------------------------------------------------------------------- #
-
-
-def remember_to_restore(aliases: list[str], path: str | None = None) -> None:
-    """Note that *aliases* are switched off only until the upgrade finishes."""
-    path = path or SOURCES_TO_RESTORE
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    # As in statusfile.write(): pkexec does not reset the umask, so the mode
-    # has to be set rather than asked for.
-    try:
-        os.chmod(directory, 0o755)
-    except OSError:
-        pass
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"aliases": list(aliases)}, fh)
-            fh.write("\n")
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def forget_to_restore(path: str | None = None) -> None:
-    """Drop the note, the sources having been put back."""
-    try:
-        os.unlink(path or SOURCES_TO_RESTORE)
-    except OSError:
-        pass
-
-
-def restore_remembered(path: str | None = None) -> list[str]:
-    """Switch any source left off by an interrupted upgrade back on.
-
-    Returns the aliases it switched on, which is empty in the ordinary case of
-    no note being there at all. Only ever *enables*: a bad or stale file cannot
-    turn a source off, and an alias that no longer exists is skipped rather
-    than handed to zypper.
-    """
-    path = path or SOURCES_TO_RESTORE
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            aliases = json.load(fh).get("aliases") or []
-    except Exception:
-        # Missing is the normal case. Unreadable or the wrong shape is not
-        # worth reporting either: there is nothing to act on either way.
-        forget_to_restore(path)
-        return []
-
-    listing = list_repos()
-    if listing.error:
-        # Leave the note in place for the next run rather than losing it.
-        return []
-
-    restored = []
-    for alias in aliases:
-        if not isinstance(alias, str):
-            continue
-        repo = listing.by_alias(alias)
-        if repo is None or repo.enabled:
-            continue
-        if set_enabled(alias, enabled=True) is None:
-            restored.append(alias)
-    forget_to_restore(path)
-    return restored

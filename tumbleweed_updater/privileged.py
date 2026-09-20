@@ -86,21 +86,18 @@ class PrivilegedRunner(QObject):
     def repos_running(self) -> bool:
         return self._repos_proc is not None
 
-    def run_check(self, wait_for_packagekit: bool = True) -> bool:
+    def run_check(self) -> bool:
         """Start a check. False if one is already in flight.
 
-        *wait_for_packagekit* carries the user's preference into the helper,
-        which runs as root and cannot read it. The helper defaults to waiting,
-        so only the opt-out needs passing - which is also what makes the systemd
-        timer (no arguments) always wait.
+        No arguments: the helper takes none, and waiting for the package lock
+        is what it always does. It used to be a preference, which was a switch
+        whose only sensible setting was on - and one the scheduled check could
+        not read anyway, running as root from a timer with no session.
         """
         if self._check_proc is not None:
             return False
-        argv = [resolve_helper(HELPER_CHECK)]
-        if not wait_for_packagekit:
-            argv.append("--no-wait-for-packagekit")
         self._check_proc = self._spawn(
-            argv,
+            [resolve_helper(HELPER_CHECK)],
             lambda ok, msg: self._done("_check_proc", self.checkFinished, ok, msg),
         )
         return True

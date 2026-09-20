@@ -1,0 +1,22 @@
+<!-- The title bar's drawing of the Tumbleweed mark: two rings that meet.
+
+     The grid is 14 units, not the 24 the tray styles use, because that is the
+     size this is drawn at: measured on a Breeze title bar by dumping the
+     pixels of a screenshot, the decoration asks for a 14px icon. One unit is
+     therefore one pixel, and the geometry is placed so that the rings fill
+     the box exactly and their lines land on whole pixels.
+
+     The crossing is gone on purpose. Both the openSUSE logo in tumbleweed.svg
+     and Lucide's infinity draw the mark as one line crossing itself, and at
+     this size the two strokes meet inside about two pixels and fuse into a
+     white lump. Two rings that touch say the same thing and survive.
+
+     icons.window_icon() picks this up by name and renders it without the
+     deepening in _one_size(), which is there for artwork that was not drawn
+     for the size it is shown at. The tray, the settings preview and the
+     launcher all still use tumbleweed.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" fill="none"
+     stroke="currentColor" stroke-width="1.2">
+  <circle cx="3.5" cy="7" r="2.9"/>
+  <circle cx="10.5" cy="7" r="2.9"/>
+</svg>

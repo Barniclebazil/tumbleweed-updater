@@ -40,6 +40,7 @@ def isolated_config_home(tmp_path, monkeypatch):
     # state, so the keys that are not written by every test are cleared here.
     SettingsStore().set_disabled_sources([])
     SettingsStore().set_deferred_until(None)
+    SettingsStore().note_unreachable_sources([])
 
 
 def test_dup_args_default_empty():
@@ -170,23 +171,21 @@ def test_free_text_options_do_not_duplicate_the_toggles(app):
 def test_packagekit_and_notifier_defaults(app):
     store = SettingsStore()
     p = store.load()
-    # Both features are on out of the box; the notifier question is unanswered.
-    assert p.wait_for_packagekit is True
+    # The notifier question starts unanswered. Waiting for PackageKit is no
+    # longer a preference at all - it is what the helpers do.
+    assert not hasattr(p, "wait_for_packagekit")
     assert p.plasma_notifier_asked is False
 
 
 def test_packagekit_and_notifier_round_trip(app):
     store = SettingsStore()
     p = store.load()
-    p.wait_for_packagekit = False
     p.plasma_notifier_asked = True
     store.save(p)
 
     # QSettings hands booleans back as the strings "false"/"true" here, which
     # is what _as_bool exists for.
-    loaded = store.load()
-    assert loaded.wait_for_packagekit is False
-    assert loaded.plasma_notifier_asked is True
+    assert store.load().plasma_notifier_asked is True
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +228,74 @@ def test_the_settings_dialog_cannot_clobber_the_disabled_sources(app):
     store.set_disabled_sources(["vlc"])
     store.save(Prefs())
     assert store.disabled_sources() == ["vlc"]
+
+
+# --------------------------------------------------------------------------- #
+# How long a software source has been unreachable.
+#
+# A source that is missing for an afternoon and one that has been missing for a
+# fortnight need different things said about them, and the only way to tell
+# them apart is to have written down when the first failed check was.
+# --------------------------------------------------------------------------- #
+
+
+def test_nothing_is_on_record_to_begin_with(app):
+    assert SettingsStore().unreachable_since("vlc") is None
+
+
+def test_a_newly_unreachable_source_is_dated_today(app):
+    SettingsStore().note_unreachable_sources(["vlc"])
+    assert SettingsStore().unreachable_since("vlc") == date.today()
+
+
+def test_the_first_day_survives_later_checks(app):
+    """The point of the record. Re-dating it on every check would mean it never
+    grew older than a few hours."""
+    store = SettingsStore()
+    store._s.setValue("sources/unreachableSince", ["vlc|2026-09-16"])
+    store._s.sync()
+
+    store.note_unreachable_sources(["vlc", "packman"])
+
+    assert store.unreachable_since("vlc") == date(2026, 9, 16)
+    assert store.unreachable_since("packman") == date.today()
+
+
+def test_a_source_that_came_back_is_forgotten(app):
+    store = SettingsStore()
+    store.note_unreachable_sources(["vlc", "packman"])
+    store.note_unreachable_sources(["packman"])
+
+    assert store.unreachable_since("vlc") is None
+    assert store.unreachable_since("packman") == date.today()
+
+
+def test_a_clean_check_clears_the_lot(app):
+    store = SettingsStore()
+    store.note_unreachable_sources(["vlc"])
+    store.note_unreachable_sources([])
+
+    assert store.unreachable_since("vlc") is None
+
+
+def test_one_unreachable_source_reads_back_as_a_list(app):
+    """The same QSettings quirk the disabled-sources list has to cope with."""
+    SettingsStore().note_unreachable_sources(["vlc"])
+    assert SettingsStore().unreachable_since("vlc") == date.today()
+
+
+def test_an_unreadable_date_is_not_a_date(app):
+    store = SettingsStore()
+    store._s.setValue("sources/unreachableSince", ["vlc|not a date"])
+    store._s.sync()
+    assert store.unreachable_since("vlc") is None
+
+
+def test_the_settings_dialog_cannot_clobber_the_dates(app):
+    store = SettingsStore()
+    store.note_unreachable_sources(["vlc"])
+    store.save(Prefs())
+    assert store.unreachable_since("vlc") == date.today()
 
 
 # --------------------------------------------------------------------------- #

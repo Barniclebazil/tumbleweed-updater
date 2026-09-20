@@ -140,7 +140,10 @@ class UpdateStatus:
 # Read by someone who has never heard of a repository, like everything else
 # that reaches the window. The cause is nearly always the one named here, since
 # an ordinary upgrade does not raise solver questions.
-_NEEDS_A_DECISION = (
+# Public: mainwindow compares ZypperResult.error against it, to say something
+# better than this when it also knows which source went missing. It travels
+# through the status file as an ordinary string, so equality is enough.
+NEEDS_A_DECISION = (
     "The list of updates couldn’t be worked out. Some of the programs you "
     "have installed came from a software source that is switched off or "
     "can’t be reached, so there is no newer version to offer them. "
@@ -199,7 +202,7 @@ def parse_zypper_dup_xml(xml_text: str) -> ZypperResult:
             # <message type="info"> and a <prompt>, which is why this looks at
             # the element rather than the words: the words are translated, the
             # element name is not.
-            result.error = _NEEDS_A_DECISION
+            result.error = NEEDS_A_DECISION
         return result
 
     result.download_size = _int(summary.get("download-size"))

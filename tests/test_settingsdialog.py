@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
 
 from tumbleweed_updater import autostart
 from tumbleweed_updater.settings import SettingsStore
@@ -144,18 +144,14 @@ def test_saving_does_not_reset_the_one_time_question(app, store, tmp_path, monke
     dialog.close()
 
 
-def test_packagekit_wait_round_trips(app, store, tmp_path, monkeypatch):
+def test_there_is_no_packagekit_row(app, store, tmp_path, monkeypatch):
+    """It was a switch whose only sensible setting was on, and one the
+    scheduled check could not read anyway, since it runs as root from a timer
+    with no session. Waiting is now what the helpers do, so there is nothing
+    here to decide."""
     monkeypatch.setattr(autostart, "SYSTEM_AUTOSTART_DIRS", (str(tmp_path / "none"),))
 
     dialog = SettingsDialog(store, _StubRunner())
-    dialog._wait_for_pk.setChecked(False)
-    dialog._save()
-    assert store.load().wait_for_packagekit is False
-    dialog.close()
-
-    dialog = SettingsDialog(store, _StubRunner())
-    assert dialog._wait_for_pk.isChecked() is False
-    dialog._wait_for_pk.setChecked(True)
-    dialog._save()
-    assert store.load().wait_for_packagekit is True
+    labels = [box.text() for box in dialog.findChildren(QCheckBox)]
+    assert not any("PackageKit" in text for text in labels), labels
     dialog.close()

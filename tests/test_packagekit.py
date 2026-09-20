@@ -161,3 +161,156 @@ def test_wait_says_how_long_it_waited(tmp_path, monkeypatch):
     free, detail = packagekit.wait_for_lock(pid_file=pid_file, proc=proc)
     assert free is True
     assert "7s" in detail
+
+
+# -- holder_is_ours -------------------------------------------------------- #
+#
+# The process in /run/zypp.pid is always zypper, never one of our helpers:
+# both of them shell out. So "is that zypper one of ours?" can only be answered
+# from the ancestry, and a helper run through a shebang carries its own path as
+# a token of argv ("/usr/bin/python3", "/usr/libexec/.../check").
+
+_CHECK = "/usr/libexec/tumbleweed-updater/check"
+
+
+def _tree(tmp_path, chain):
+    """Build a fake /proc from a list of (pid, ppid, argv) tuples."""
+    root = tmp_path / "proc"
+    for pid, ppid, argv in chain:
+        d = root / str(pid)
+        d.mkdir(parents=True)
+        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+        (d / "comm").write_text(argv[0].rsplit("/", 1)[-1][:15])
+        (d / "status").write_text(f"Name:\tx\nPPid:\t{ppid}\n")
+    return str(root)
+
+
+def test_our_own_checks_zypper_is_recognised(tmp_path):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "--non-interactive", "refresh"]),
+            (800, 1, ["/usr/bin/python3", _CHECK]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (_CHECK,), proc) is True
+
+
+def test_the_helper_is_found_further_up_the_chain(tmp_path):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 850, ["/usr/bin/zypper", "dup"]),
+            (850, 800, ["/bin/sh", "-c", "zypper dup"]),
+            (800, 1, ["/usr/bin/python3", _CHECK]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (_CHECK,), proc) is True
+
+
+def test_somebody_elses_zypper_is_not_ours(tmp_path):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "dup"]),
+            (800, 1, ["/bin/bash"]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (_CHECK,), proc) is False
+
+
+def test_the_path_has_to_be_a_whole_argument(tmp_path):
+    """An editor with the helper open must not count as the helper running."""
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "dup"]),
+            (800, 1, ["/usr/bin/vim", f"{_CHECK}.py"]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (_CHECK,), proc) is False
+
+
+def test_an_ancestor_that_has_gone_ends_the_walk(tmp_path):
+    proc = _tree(tmp_path, [(900, 800, ["/usr/bin/zypper", "dup"])])
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (_CHECK,), proc) is False
+
+
+def test_nothing_is_ours_when_no_paths_are_given(tmp_path):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "dup"]),
+            (800, 1, ["/usr/bin/python3", _CHECK]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    assert packagekit.holder_is_ours(holder, (), proc) is False
+
+
+def test_our_own_check_is_named_without_a_pid(tmp_path):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "refresh"]),
+            (800, 1, ["/usr/bin/python3", _CHECK]),
+        ],
+    )
+    holder = packagekit.lock_holder(_pidfile(tmp_path, "900"), proc)
+    detail = packagekit.describe_holder(holder, (_CHECK,), proc)
+    assert "own update check" in detail
+    assert "900" not in detail
+    # Without being told what is ours, it is just another zypper.
+    assert "900" in packagekit.describe_holder(holder)
+
+
+def test_wait_sits_behind_our_own_check(tmp_path, monkeypatch):
+    """It used to give up at once, because our check's zypper looks like
+    anybody's. That is how an upgrade and a scheduled check wrecked each
+    other's runs."""
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "refresh"]),
+            (800, 1, ["/usr/bin/python3", _CHECK]),
+        ],
+    )
+    pid_file = _pidfile(tmp_path, "900")
+    # Second look: the lock has been let go.
+    slept = []
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        open(pid_file, "w").close()
+
+    monkeypatch.setattr(packagekit.time, "sleep", fake_sleep)
+
+    free, detail = packagekit.wait_for_lock(
+        pid_file=pid_file, proc=proc, ours=(_CHECK,)
+    )
+    assert free is True
+    assert slept
+    assert "own update check" in detail
+
+
+def test_wait_still_gives_up_at_once_on_a_stranger(tmp_path, monkeypatch):
+    proc = _tree(
+        tmp_path,
+        [
+            (900, 800, ["/usr/bin/zypper", "dup"]),
+            (800, 1, ["/bin/bash"]),
+        ],
+    )
+    monkeypatch.setattr(
+        packagekit.time, "sleep", lambda _s: pytest.fail("should not have waited")
+    )
+    free, detail = packagekit.wait_for_lock(
+        pid_file=_pidfile(tmp_path, "900"), proc=proc, ours=(_CHECK,)
+    )
+    assert free is False
+    assert "900" in detail

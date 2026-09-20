@@ -83,16 +83,13 @@ def test_helper_treats_reboot_and_restart_exits_as_success(monkeypatch):
 # --------------------------------------------------------------------------- #
 # A software source that cannot be reached must not stop the upgrade *here*.
 #
-# This is what the helper used to do: `zypper refresh` returned non-zero
-# because one third-party source was unreachable, and the whole dup was
-# abandoned before it started. zypper itself skips the source and carries on
-# from the metadata already on disk, which is what its exit code 106 is for.
-#
-# Whether the dup then succeeds is zypper's decision. Measured against a real
-# unreachable source: with usable metadata still on disk it upgrades normally,
-# and with none it refuses ("dist-upgrade ... must not continue if enabled
-# repositories fail to refresh"), exit 4. So the helper always tries, and
-# explains the refusal in plain words if one comes back.
+# `zypper dup` refuses to run when a repository fails to refresh during its own
+# run - measured, exit 4, "dist-upgrade ... must not continue if enabled
+# repositories fail to refresh". The helper therefore refreshes first itself
+# and then, if anything could not be reached, runs the dup with --no-refresh:
+# everything reachable is fresh from a moment ago, the missing source is
+# described by what is already on disk, and there is no failed refresh in the
+# dup's run for it to refuse over.
 # --------------------------------------------------------------------------- #
 
 
@@ -106,36 +103,49 @@ def _record_runs(monkeypatch, refresh_rc: int, refresh_output: str = "", dup_rc=
     monkeypatch.setattr(
         helper_run_update, "_run", lambda argv: ran.append(argv) or dup_rc
     )
-    monkeypatch.setattr(
-        helper_run_update, "_missing_sources", lambda out: [("vlc", "VLC")]
-    )
+    monkeypatch.setattr(helper_run_update, "_missing_sources", lambda out: ["VLC"])
     return ran
 
 
-def test_an_unreachable_source_does_not_stop_the_upgrade(monkeypatch, capsys):
-    # 4 is what zypper returned in the failure this was written for.
+def test_an_unreachable_source_makes_the_dup_skip_its_own_refresh(
+    monkeypatch, capsys
+):
+    """The whole fix, in one assertion. 4 is what zypper returned in the
+    failure this was written for."""
     ran = _record_runs(monkeypatch, refresh_rc=4)
-    monkeypatch.setattr("sys.argv", ["run-update"])
+    monkeypatch.setattr("sys.argv", ["run-update", "-y"])
 
     assert helper_run_update.main() == 0
     assert ran[0] == ["zypper", "refresh"]
-    assert ran[1] == ["zypper", "dup"]
+    assert ran[1] == ["zypper", "--no-refresh", "dup", "-y"]
     out = capsys.readouterr().out
     assert "VLC" in out
-    assert "Trying the upgrade anyway" in out
-    # Nothing is promised about the outcome: that is zypper's to decide.
-    assert "can still be installed" not in out
+    assert "details already on this computer" in out
+
+
+def test_a_refresh_that_worked_leaves_the_dup_to_refresh_for_itself(
+    monkeypatch
+):
+    """--no-refresh is for getting past a source that is not there. With
+    everything reachable, zypper keeps its own safety net."""
+    ran = _record_runs(monkeypatch, refresh_rc=0)
+    monkeypatch.setattr("sys.argv", ["run-update", "-y"])
+
+    assert helper_run_update.main() == 0
+    assert ran[1] == ["zypper", "dup", "-y"]
 
 
 def test_a_dup_refused_over_the_missing_source_is_explained(monkeypatch, capsys):
-    """zypper's own refusal is a paragraph about orphaned packages and
-    repository setup. The last word here is what to do about it."""
+    """Reached only when --no-refresh was not enough either, which means the
+    details on disk have gone stale too. Nothing in the window will fix that,
+    so the last word is about the source itself."""
     _record_runs(monkeypatch, refresh_rc=4, dup_rc=4)
     monkeypatch.setattr("sys.argv", ["run-update"])
 
     assert helper_run_update.main() == 4
     out = capsys.readouterr().out
-    assert "Switch VLC off" in out
+    assert "VLC" in out
+    assert "replacing or removing" in out
     for jargon in ("repository", "metadata", "exit"):
         assert jargon not in out.lower(), jargon
 
@@ -156,7 +166,7 @@ def test_repos_skipped_exit_code_also_continues(monkeypatch):
     monkeypatch.setattr("sys.argv", ["run-update"])
 
     assert helper_run_update.main() == 0
-    assert ran[1] == ["zypper", "dup"]
+    assert ran[1] == ["zypper", "--no-refresh", "dup"]
 
 
 def test_a_held_package_lock_still_stops_the_upgrade(monkeypatch):
@@ -175,7 +185,7 @@ def test_the_warning_is_generic_when_no_source_can_be_named(monkeypatch, capsys)
     monkeypatch.setattr("sys.argv", ["run-update"])
 
     assert helper_run_update.main() == 0
-    assert ran[1] == ["zypper", "dup"]
+    assert ran[1] == ["zypper", "--no-refresh", "dup"]
     assert "some of your software sources" in capsys.readouterr().out.lower()
 
 
@@ -207,23 +217,20 @@ def test_a_missing_zypper_does_not_raise_out_of_the_refresh():
     assert output == ""
 
 
-# --------------------------------------------------------------------------- #
-# --without-unreachable: switch the source off, upgrade, switch it back on.
-#
-# The temporary part is the point. What the user agreed to is one upgrade, not
-# a change to their machine, so every ending has to put the source back.
-# --------------------------------------------------------------------------- #
+def test_the_helpers_own_option_is_stripped_before_the_allow_list():
+    mine, rest = helper_run_update._split_own_options(["--cleanup", "-y"])
+    assert mine == {"--cleanup"}
+    assert rest == ["-y"]
 
 
-def test_the_helpers_own_options_parse_in_any_order():
-    for order in (
-        ["--cleanup", "--no-wait-for-packagekit", "--without-unreachable"],
-        ["--without-unreachable", "--cleanup"],
-        ["--no-wait-for-packagekit", "--without-unreachable", "--cleanup"],
-    ):
-        mine, rest = helper_run_update._split_own_options(order + ["-y"])
-        assert mine == set(order)
-        assert rest == ["-y"]
+def test_the_flag_that_used_to_skip_the_packagekit_wait_is_now_refused(
+    monkeypatch, capsys
+):
+    """Waiting is what this helper does; there is no option that says
+    otherwise, so the allow-list turns it down like any other stranger."""
+    monkeypatch.setattr("sys.argv", ["run-update", "--no-wait-for-packagekit"])
+    assert helper_run_update.main() == 2
+    assert "--no-wait-for-packagekit" in capsys.readouterr().err
 
 
 def test_an_option_of_ours_after_a_dup_option_is_left_for_the_allow_list():
@@ -234,163 +241,52 @@ def test_an_option_of_ours_after_a_dup_option_is_left_for_the_allow_list():
     assert rest == ["-y", "--cleanup"]
 
 
-class _Sources:
-    """Stands in for the two dry runs _upgrade_without() relies on."""
-
-    def __init__(self, before, after):
-        self.before = before
-        self.after = after
-        self.calls = 0
-
-    def __call__(self, *a, **k):
-        from tumbleweed_updater.sources import Action, Package, ZypperResult
-
-        self.calls += 1
-        names = self.before if self.calls == 1 else self.after
-        return ZypperResult(
-            packages=[Package(n, Action.REMOVE, "", "1.0", "x86_64") for n in names]
-        )
-
-
-def _leave_out_run(monkeypatch, tmp_path, before, after, dup_rc=0):
-    """Drive one --without-unreachable run and report what it did."""
-    from tumbleweed_updater import repos, statusfile
-
-    seen = {"enabled": [], "dup": None}
-    monkeypatch.setattr(helper_run_update, "_run_teed", lambda argv: (4, "out"))
-    monkeypatch.setattr(
-        helper_run_update,
-        "_run",
-        lambda argv: seen.__setitem__("dup", argv) or dup_rc,
-    )
-    monkeypatch.setattr(
-        helper_run_update, "_missing_sources", lambda out: [("vlc", "VLC")]
-    )
-    monkeypatch.setattr(
-        repos,
-        "set_enabled",
-        lambda alias, enabled, **k: seen["enabled"].append((alias, enabled)),
-    )
-    # No status file: the baseline is then the first of the two dry runs.
-    monkeypatch.setattr(statusfile, "read", lambda *a, **k: None)
-    monkeypatch.setattr(
-        helper_run_update.sources, "check_zypper", _Sources(before, after)
-    )
-    monkeypatch.setattr(
-        repos, "SOURCES_TO_RESTORE", str(tmp_path / "restore.json")
-    )
-    monkeypatch.setattr("sys.argv", ["run-update", "--without-unreachable", "-y"])
-    seen["rc"] = helper_run_update.main()
-    return seen
-
-
-def test_the_source_is_switched_off_and_back_on_around_the_upgrade(
-    monkeypatch, tmp_path, capsys
+def test_the_removed_leave_it_out_option_is_refused_like_any_other(
+    monkeypatch, capsys
 ):
-    seen = _leave_out_run(monkeypatch, tmp_path, before=set(), after=set())
-
-    assert seen["rc"] == 0
-    assert seen["enabled"] == [("vlc", False), ("vlc", True)]
-    assert seen["dup"] == ["zypper", "dup", "-y"]
-    out = capsys.readouterr().out
-    assert "Leaving VLC out of this update" in out
-    assert "Putting VLC back" in out
-
-
-def test_the_source_goes_back_on_even_when_the_upgrade_fails(
-    monkeypatch, tmp_path, capsys
-):
-    seen = _leave_out_run(
-        monkeypatch, tmp_path, before=set(), after=set(), dup_rc=4
-    )
-
-    assert seen["rc"] == 4
-    assert seen["enabled"][-1] == ("vlc", True)
+    """--without-unreachable used to switch the unreachable source off for the
+    length of the upgrade. It could not work - a source zypper has no usable
+    details for is already equivalent to a disabled one, so switching it off
+    only orphans everything installed from it - and it is gone. It must now
+    fail the allow-list rather than being quietly ignored."""
+    monkeypatch.setattr("sys.argv", ["run-update", "--without-unreachable"])
+    assert helper_run_update.main() == 2
+    assert "--without-unreachable" in capsys.readouterr().err
 
 
-def test_extra_removals_stop_the_upgrade_before_it_starts(
-    monkeypatch, tmp_path, capsys
-):
-    """Leaving a source out orphans everything installed from it, and zypper
-    removes orphans that block an upgrade without asking, since the app's
-    default options include -y. So the dry run is compared first."""
-    seen = _leave_out_run(
-        monkeypatch, tmp_path, before={"old-thing"}, after={"old-thing", "vlc"}
-    )
-
-    assert seen["rc"] != 0
-    assert seen["dup"] is None  # never got as far as the upgrade
-    assert seen["enabled"] == [("vlc", False), ("vlc", True)]
-    out = capsys.readouterr().out
-    assert "would also remove" in out
-    assert "nothing was changed" in out
-
-
-def test_removals_that_were_already_planned_are_not_held_against_it(
-    monkeypatch, tmp_path
-):
-    seen = _leave_out_run(
-        monkeypatch, tmp_path, before={"old-thing"}, after={"old-thing"}
-    )
-    assert seen["rc"] == 0
-    assert seen["dup"] == ["zypper", "dup", "-y"]
-
-
-def test_nothing_is_switched_off_without_the_option(monkeypatch, tmp_path):
-    from tumbleweed_updater import repos
-
-    touched = []
-    monkeypatch.setattr(helper_run_update, "_run_teed", lambda argv: (4, "out"))
-    monkeypatch.setattr(helper_run_update, "_run", lambda argv: 0)
+def test_the_upgrade_waits_for_this_apps_own_check(monkeypatch):
+    """Our check's zypper is what lands in /run/zypp.pid, so without being
+    told, wait_for_lock() reads it as a stranger's and gives up at once. The
+    two then wreck each other's runs - see tests/test_packagekit.py."""
+    seen = {}
     monkeypatch.setattr(
-        helper_run_update, "_missing_sources", lambda out: [("vlc", "VLC")]
+        helper_run_update.packagekit, "lock_holder", lambda: (38917, "zypper")
     )
     monkeypatch.setattr(
-        repos, "set_enabled", lambda *a, **k: touched.append(a) or None
+        helper_run_update.packagekit,
+        "holder_is_ours",
+        lambda holder, paths, *a, **k: True,
     )
-    monkeypatch.setattr("sys.argv", ["run-update", "-y"])
+    monkeypatch.setattr(
+        helper_run_update.packagekit,
+        "describe_holder",
+        lambda holder, ours=(), *a, **k: "held by our check",
+    )
+
+    def fake_wait(**kwargs):
+        seen["ours"] = kwargs.get("ours")
+        return True, "released"
+
+    monkeypatch.setattr(helper_run_update.packagekit, "wait_for_lock", fake_wait)
+    _record_runs(monkeypatch, refresh_rc=0)
+    monkeypatch.setattr("sys.argv", ["run-update"])
 
     assert helper_run_update.main() == 0
-    assert touched == []
+    assert any("check" in p for p in seen["ours"]), seen["ours"]
 
 
-def test_a_dry_run_that_cannot_answer_stops_and_says_why(monkeypatch, tmp_path, capsys):
-    """The usual reason it cannot answer is the thing being guarded against:
-    with the source out, everything installed from it is an orphan and zypper
-    asks what to do with each rather than computing a plan. Its explanation is
-    already written for the user, so it is passed straight through."""
-    from tumbleweed_updater import repos, sources, statusfile
-
-    seen = {"enabled": [], "dup": None}
-    monkeypatch.setattr(helper_run_update, "_run_teed", lambda argv: (4, "out"))
-    monkeypatch.setattr(
-        helper_run_update, "_run", lambda argv: seen.__setitem__("dup", argv) or 0
-    )
-    monkeypatch.setattr(
-        helper_run_update, "_missing_sources", lambda out: [("vlc", "VLC")]
-    )
-    monkeypatch.setattr(
-        repos, "set_enabled", lambda alias, enabled, **k: seen["enabled"].append(
-            (alias, enabled)
-        )
-    )
-    monkeypatch.setattr(repos, "SOURCES_TO_RESTORE", str(tmp_path / "restore.json"))
-    monkeypatch.setattr(statusfile, "read", lambda *a, **k: None)
-
-    calls = {"n": 0}
-
-    def dry_runs(*a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return sources.ZypperResult()  # the baseline, taken beforehand
-        return sources.ZypperResult(error="Some of the programs you have…")
-
-    monkeypatch.setattr(helper_run_update.sources, "check_zypper", dry_runs)
-    monkeypatch.setattr("sys.argv", ["run-update", "--without-unreachable", "-y"])
-
-    assert helper_run_update.main() == 1
-    assert seen["dup"] is None
-    assert seen["enabled"] == [("vlc", False), ("vlc", True)]
-    out = capsys.readouterr().out
-    assert "Some of the programs you have" in out
-    assert "VLC has been put back" in out
+def test_the_check_helper_path_covers_installed_and_checkout():
+    """The GUI may be running from a checkout while this helper is the
+    installed copy, or the other way round."""
+    assert helper_run_update._OUR_CHECK
+    assert all(p.endswith("check") for p in helper_run_update._OUR_CHECK)

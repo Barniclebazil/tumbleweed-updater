@@ -2,10 +2,16 @@
 
 States:
 
-* **idle**    - monochrome, follows the Plasma light/dark theme.
-* **updates** - openSUSE orange.
-* **busy**    - orange while a check or an update run is in progress.
-* **error**   - monochrome but the tooltip carries the message.
+* **idle**       - monochrome, follows the Plasma light/dark theme.
+* **updates**    - openSUSE orange.
+* **installing** - orange too: there are updates, and they are going in.
+* **checking**   - no icon of its own. The mark keeps saying whatever it
+                   already knew, and only the tooltip changes.
+* **error**      - monochrome but the tooltip carries the message.
+
+Orange therefore means exactly one thing: there are updates. A check used to
+turn it orange as well, which put a bright mark in the panel every few hours to
+announce that the app was looking - attention asked for with nothing to say.
 """
 
 from __future__ import annotations
@@ -23,7 +29,8 @@ from .settings import DEFAULT_ICON_STYLE, SettingsStore
 class TrayState(Enum):
     IDLE = auto()
     UPDATES = auto()
-    BUSY = auto()
+    INSTALLING = auto()
+    CHECKING = auto()
     ERROR = auto()
 
 
@@ -60,10 +67,20 @@ class TrayIcon(QSystemTrayIcon):
     # -- public API ---------------------------------------------------------- #
 
     def set_state(self, state: TrayState, tooltip: str) -> None:
-        self._state = state
         self.setToolTip(f"{APP_NAME}\n{tooltip}")
+        # Disabled for every state but UPDATES, CHECKING included: it is what
+        # stops this menu starting an update while a check has zypper's lock.
+        # The window emits the real state when the check ends, which brings it
+        # back.
+        self.act_update.setEnabled(state is TrayState.UPDATES)
+        if state is TrayState.CHECKING:
+            # Deliberately leaves _state and the icon alone. A check is the app
+            # looking, not the app wanting attention, so the mark goes on
+            # saying what it knew a moment ago - orange if updates are waiting,
+            # monochrome if none are.
+            return
+        self._state = state
         self._refresh_icon()
-        self.act_update.setEnabled(state == TrayState.UPDATES)
 
     def reload(self) -> None:
         """Re-render the icon (e.g. after the icon style changed in settings)."""
@@ -78,7 +95,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def _refresh_icon(self) -> None:
         style = self._style()
-        if self._state in (TrayState.UPDATES, TrayState.BUSY):
+        if self._state in (TrayState.UPDATES, TrayState.INSTALLING):
             self.setIcon(updates_icon(style))
         else:
             self.setIcon(idle_icon(style, text_color()))

@@ -111,19 +111,6 @@ class SettingsDialog(QDialog):
         self._autostart.setChecked(autostart.own_autostart_enabled())
         form.addRow("", self._autostart)
 
-        self._wait_for_pk = QCheckBox("Wait for PackageKit instead of failing")
-        self._wait_for_pk.setChecked(self._prefs.wait_for_packagekit)
-        self._wait_for_pk.setToolTip(
-            "PackageKit takes the system package lock whenever something wakes "
-            "it, and zypper then refuses to run at all ('System management is "
-            "locked'). Its jobs are short, so waiting turns that failure into "
-            "a short delay.\n\n"
-            "Nothing is cancelled or stopped: PackageKit is left to finish.\n\n"
-            "The scheduled background check always waits, because it runs as a "
-            "system service and cannot read your settings."
-        )
-        form.addRow("", self._wait_for_pk)
-
         # Only offered where there is something to suppress: no Plasma, no row.
         # An empty-label QFormLayout row would leave a visible gap if it were
         # merely hidden, so it is not built at all.
@@ -385,7 +372,6 @@ class SettingsDialog(QDialog):
             cleanup_after_update=self._cleanup.isChecked(),
             reboot_action=self._reboot_action.currentData(),
             reset_after_update=self._reset_after.currentData(),
-            wait_for_packagekit=self._wait_for_pk.isChecked(),
             # Carried over, not defaulted: Prefs() is rebuilt field by field
             # here, so anything without a widget would silently reset.
             plasma_notifier_asked=self._prefs.plasma_notifier_asked,

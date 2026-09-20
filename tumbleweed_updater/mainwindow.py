@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 
@@ -93,26 +94,34 @@ _ACTION_LABELS = {
 }
 
 
-def _missing_sources_text(failed: list[tuple[str, str]], total: int) -> str:
+# How long a source has to have been unreachable before the window stops
+# calling it a passing problem. Three days: long enough that "try again
+# tomorrow" has been tried and did not work, short enough to be useful.
+_STALE_SOURCE_DAYS = 3
+
+
+def _missing_sources_text(failed, total: int, since=None) -> str:
     """The notice for software sources that could not be reached.
 
     Written for someone who has never heard of a repository: what happened,
-    what it means for the programs that came from the source, and that it is
-    probably not their problem to fix. The user sees the source's display name;
-    the alias stays internal.
+    what it means for the programs that came from the source, and whether it is
+    their problem to fix. The user sees the source's display name; the alias
+    stays internal.
 
     It says the source was left out "when checking for updates", which is the
-    literal truth and was not what this used to claim. Nothing has been left
-    out of an *update* at this point: no update has run. The check refreshed
-    every source, this one failed, zypper skipped it, and the dry run then
-    counted what the rest had to offer.
+    literal truth. Nothing has been left out of an *update* at this point: no
+    update has run. The check refreshed every source, this one failed, zypper
+    skipped it, and the dry run then counted what the rest had to offer.
 
-    Nor does it promise the rest "can still be installed", which it did once.
-    That is true only while zypper still has usable details for the missing
-    source on disk. Once those go stale it refuses the upgrade outright - dup
-    is the one command that will not run against an incomplete set of sources,
-    and it says so itself: "If a failing repository is actually not needed, it
-    must be disabled." The way past that is the button beside this text.
+    Nor is there anything to press. The update itself needs no help getting
+    past this: helper/run-update refreshes first and then runs the dup with
+    --no-refresh, so the details already on this computer stand in for the
+    source that is missing and the upgrade goes ahead.
+
+    *since* is the day the oldest of these sources was first found unreachable,
+    or None if that is not known. Past _STALE_SOURCE_DAYS it stops being
+    somebody else's bad afternoon and the closing sentence says so, because by
+    then the only thing that will help is changing the source.
     """
     names = [name for _alias, name in failed]
     if len(names) == 1:
@@ -138,10 +147,80 @@ def _missing_sources_text(failed: list[tuple[str, str]], total: int) -> str:
     )
     return (
         f"{opening} {rest} Programs you have installed from {theirs} keep "
-        f"working, however they will not get updates until {again}. This is "
-        "usually a temporary problem at the other end, so it is worth trying "
-        "again tomorrow."
+        f"working, however they will not get updates until {again}. "
+        + _closing(names, since)
     )
+
+
+def _closing(names: list[str], since) -> str:
+    """The last sentence of the notice: wait, or do something about it."""
+    if since is None or (date.today() - since).days < _STALE_SOURCE_DAYS:
+        return (
+            "This is usually a temporary problem at the other end, so it is "
+            "worth trying again tomorrow."
+        )
+    one = len(names) == 1
+    subject = "It" if one else "They"
+    verb = "has" if one else "have"
+    pronoun = "it" if one else "them"
+    return (
+        f"{subject} {verb} not been reachable since {_day(since)}, which is "
+        "longer than a passing problem at the other end. If nothing changes "
+        f"you will want to replace or remove {pronoun} in YaST → Software "
+        "Repositories."
+    )
+
+
+def _stuck_sources_text(failed, since) -> str:
+    """The notice when the check could not work anything out at all.
+
+    NEEDS_A_DECISION on its own says a source is "switched off or can't be
+    reached", because sources.py has only the solver's behaviour to go on. Here
+    the window also knows which source went missing and when, so it can say the
+    thing that is actually true and name the way out.
+    """
+    names = [name for _alias, name in failed]
+    one = len(names) == 1
+    if one:
+        subject = f'The software source "{names[0]}" can’t'
+        them = "it"
+        been = "It has"
+    else:
+        subject = (
+            f"{len(names)} of your software sources ({', '.join(names)}) can’t"
+        )
+        them = "them"
+        been = "They have"
+    aged = f" {been} not been reachable since {_day(since)}." if since else ""
+    return (
+        f"The list of updates couldn’t be worked out. {subject} be "
+        f"reached, and there are no longer enough details about {them} on this "
+        f"computer to work the rest out without {them}.{aged} Replace or "
+        f"remove {them} in YaST → Software Repositories, or wait for the "
+        "other end to come back."
+    )
+
+
+def _locked_text(count: int, checked: str) -> str:
+    """What to say when the check could not get at the package system.
+
+    zypper's own words for this are "System management is locked by the
+    application with pid 38917 (zypper). Close this application before trying
+    again", and helper/check wraps them in a count of its automatic attempts.
+    Every part of that breaks the house rule, and the pid it names is usually
+    one of ours - this application's own upgrade, or its own check. The
+    terminal still has the real thing when an upgrade is running.
+    """
+    opening = (
+        "Something else on this computer was using the package system, so the "
+        "update check couldn’t run."
+    )
+    if count:
+        return (
+            f"{opening} The {count} updates below are the ones found by the "
+            f"last check, {checked}, and nothing has changed since."
+        )
+    return f"{opening} Nothing on your computer has changed."
 
 
 def _day(day) -> str:
@@ -202,9 +281,6 @@ class MainWindow(QMainWindow):
         self._privileged = privileged
         self._status = UpdateStatus()
         self._flatpak_checked = False
-        # Set for real by _render_banner(); needed before that, because
-        # _build_ui() reaches _update_buttons() through _set_running().
-        self._banner_offers_leave_out = False
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(window_icon(self._settings.load().icon_style))
@@ -356,7 +432,7 @@ class MainWindow(QMainWindow):
         self._progress.hide()
         self._btn_update = QPushButton(_UPDATE_BUTTON_TEXT)
         self._btn_update.setDefault(True)
-        self._btn_update.clicked.connect(self._on_update_button_clicked)
+        self._btn_update.clicked.connect(self._on_update_clicked)
         self._btn_cancel = QPushButton("Cancel")
         self._btn_cancel.clicked.connect(self._runner_cancel)
         self._btn_cancel.hide()
@@ -400,10 +476,48 @@ class MainWindow(QMainWindow):
         # gone, and there is no reason to keep hiding the updates from them.
         if not status.zypper.error and not status.zypper.failed_repos:
             self._settings.set_deferred_until(None)
-        self._status.zypper = status.zypper
-        self._status.generated = status.generated
+        if self._lost_the_lock(status.zypper):
+            # A check that could not get the lock learnt nothing, and nothing
+            # on this computer changed while it was failing to. Keeping the
+            # list it could not replace is the difference between a banner over
+            # the updates and a window that says it knows of none - which is
+            # what a scheduled check colliding with our own upgrade used to do.
+            # generated is deliberately not touched: "Last checked" belongs to
+            # the check that produced the list, not to the one that failed.
+            self._status.zypper = replace(
+                self._status.zypper,
+                error=status.zypper.error,
+                locked=True,
+            )
+        else:
+            self._status.zypper = status.zypper
+            self._status.generated = status.generated
         self._status.snapshots_ok = status.snapshots_ok
+        # After the merge, not before, and from the result the window is about
+        # to show. _render() reads these dates back out to decide how much of a
+        # problem to call an unreachable source, and a check that never got the
+        # lock learnt nothing about the sources either - taking its empty list
+        # would forget how long they had been away and start the clock again.
+        # A check that did run and reached everything passes an empty list,
+        # which forgets the lot, and that is the point.
+        self._settings.note_unreachable_sources(
+            [alias for alias, _name in self._status.zypper.failed_repos]
+        )
         self._render()
+
+    def _lost_the_lock(self, incoming) -> bool:
+        """Is *incoming* a locked-out check arriving over a list we already have?
+
+        Narrow on purpose. Any other failed check still clears the window,
+        because then the app genuinely does not know what is installable; a
+        held lock is the one failure that says nothing about the system at all.
+        """
+        return bool(
+            incoming.locked
+            and incoming.error
+            and not incoming.packages
+            and self._status.zypper.packages
+        )
 
     def show_update_available(self, new_version: str) -> None:
         """Called once the running app is older than its own installed files."""
@@ -448,9 +562,9 @@ class MainWindow(QMainWindow):
         self._settings.set_deferred_until(None)
         # Started before the UI is touched, so that _set_busy() sees the check
         # as running and greys the banner's button out with the rest.
-        self._privileged.run_check(self._settings.load().wait_for_packagekit)
+        self._privileged.run_check()
         self._set_busy(True, "Checking for updates…")
-        self.stateChanged.emit(TrayState.BUSY, "Checking for updates…")
+        self.stateChanged.emit(TrayState.CHECKING, "Checking for updates…")
         self._flatpak.start()
 
     def _on_wait_for_lock_clicked(self) -> None:
@@ -503,16 +617,6 @@ class MainWindow(QMainWindow):
 
     # -- updating -------------------------------------------------------- #
 
-    def _on_update_button_clicked(self) -> None:
-        """The window's own update button, whichever it is currently saying.
-
-        "Update now…" still has the question to ask; "Update with X anyway" is
-        the answer, so asking again would be asking twice.
-        """
-        self._on_update_clicked(
-            leave_unreachable_out=False if self._banner_offers_leave_out else None
-        )
-
     def _on_defer_clicked(self) -> None:
         """Stop asking about this until tomorrow.
 
@@ -524,27 +628,25 @@ class MainWindow(QMainWindow):
         self._statusbar(f"Put off until {_day(tomorrow)}.")
         self._render()
 
-    def _on_update_without_unreachable(self) -> None:
-        """The banner's button: update with the missing sources left out.
-
-        Takes no argument, because which sources are unreachable is worked out
-        by the helper, as root, from its own refresh. Nothing here is passed
-        down but the decision itself.
-        """
-        self._on_update_clicked(leave_unreachable_out=True)
-
-    def _on_update_clicked(self, leave_unreachable_out: bool | None = None) -> None:
+    def _on_update_clicked(self) -> None:
         """Start an update run.
 
-        *leave_unreachable_out* is None when the user pressed "Update now" and
-        has not been asked yet, and True when they arrived by a route that has
-        already said what it will do - the banner's button. It is never False
-        from a caller; that is only what the question can answer.
+        A software source that could not be reached needs nothing from the user
+        here and asks nothing: helper/run-update refreshes first and then runs
+        the dup with --no-refresh, so the details already on this computer
+        stand in for the missing source. There used to be a question at this
+        point, offering to switch that source off for the length of the
+        upgrade. It could not work - see helper/run-update - and it is gone.
 
-        Qt calls this with no arguments (the clicked(bool) signal is adapted to
-        the slot's arity), so the default has to be the "ask me" case.
+        The button is greyed out while one of our own jobs has zypper's lock,
+        and this asks again, because the button is not the only route here: the
+        tray menu and a click already in flight both arrive at this method. Two
+        of our own jobs reaching for the lock at once is not a deadlock, it is
+        one of them losing - and when the loser was the check, the window
+        replaced the update list with its own zypper's pid in an orange bar.
         """
-        if self._runner.is_running:
+        if self._busy_with_the_package_system():
+            self._statusbar("Still checking for updates\u2026")
             return
         prefs = self._settings.load()
         do_zypper = self._chk_system.isChecked() and self._status.zypper.count > 0
@@ -559,16 +661,6 @@ class MainWindow(QMainWindow):
             return
 
         dup_args = dup_args_from_prefs(prefs)
-
-        without_unreachable = False
-        if do_zypper and self._status.zypper.failed_repos:
-            if leave_unreachable_out is None:
-                answer = self._ask_about_unreachable_sources()
-                if answer is None:
-                    return
-                without_unreachable = answer
-            else:
-                without_unreachable = leave_unreachable_out
 
         lines = ["The following will run in the terminal below:"]
         if do_zypper:
@@ -606,20 +698,11 @@ class MainWindow(QMainWindow):
             # list that will run as root is visible.
             lines.append("")
             lines.append("  $ zypper dup " + " ".join(dup_args))
-            if without_unreachable:
-                names = [n for _a, n in self._status.zypper.failed_repos]
-                lines.append("")
-                lines.append(
-                    f"  {', '.join(names)} will be left out of this update and "
-                    "switched back on when it finishes."
-                )
 
         steps = self._runner.build_queue(
             do_zypper=do_zypper,
             dup_args=dup_args,
             cleanup=prefs.cleanup_after_update,
-            wait_for_packagekit=prefs.wait_for_packagekit,
-            without_unreachable=without_unreachable,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
         )
@@ -627,63 +710,9 @@ class MainWindow(QMainWindow):
         self._update_log_controls()
         self._terminal.append_notice("\n".join(lines))
         self._set_running(True)
-        self.stateChanged.emit(TrayState.BUSY, "Installing updates…")
+        self.stateChanged.emit(TrayState.INSTALLING, "Installing updates…")
         self._runner.start(steps)
         self._terminal.setFocus()
-
-    def _ask_about_unreachable_sources(self) -> bool | None:
-        """Offer to leave the unreachable sources out of this one update.
-
-        Returns True to leave them out, False to try with them left in, and
-        None to call the whole thing off.
-
-        Asked here rather than decided in the helper because it is a change to
-        the machine, however briefly, and a user who is told what is happening
-        can make sense of the terminal underneath. Asked *before* the upgrade
-        rather than after it fails because the failure is zypper's paragraph
-        about orphaned packages, and by then the person has already been given
-        a fright for something that is only somebody else's server being down.
-        """
-        names = [name for _alias, name in self._status.zypper.failed_repos]
-        one = len(names) == 1
-        # listed names them, subject opens a sentence about them, pronoun
-        # stands in for them mid-sentence.
-        listed = names[0] if one else ", ".join(names)
-        subject = names[0] if one else "They"
-        pronoun = "it" if one else "them"
-        verb = "is" if one else "are"
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle(f"{listed} can’t be reached")
-        box.setText(
-            f"{listed} can’t be reached at the moment, and the update "
-            f"usually won’t go ahead while {pronoun} {verb} switched on."
-            "\n\n"
-            f"{subject} can be left out of this one update and switched back "
-            "on the moment it finishes, so nothing about your computer "
-            "changes permanently. Anything you installed from "
-            f"{pronoun} stays where it is."
-        )
-        leave_out = box.addButton(
-            "Leave it out just this once" if len(names) == 1
-            else "Leave them out just this once",
-            QMessageBox.AcceptRole,
-        )
-        # Worth keeping for the case the banner cannot tell apart: when zypper
-        # still has usable details on disk the upgrade works with the source
-        # left in, and leaving it out is then needless.
-        anyway = box.addButton("Try anyway", QMessageBox.DestructiveRole)
-        box.addButton(QMessageBox.Cancel)
-        box.setDefaultButton(leave_out)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked is leave_out:
-            return True
-        if clicked is anyway:
-            return False
-        return None
 
     def _runner_cancel(self) -> None:
         if self._runner.cancel():
@@ -778,9 +807,11 @@ class MainWindow(QMainWindow):
         deferred = self._settings.deferred_until()
 
         checked = _relative_time(self._status.generated)
-        if z.error:
+        if z.error and not z.count:
             # A check that actually failed is not something the user put off,
-            # so it still wins the headline.
+            # so it still wins the headline - but only when it left the window
+            # with nothing. A check that lost the lock over a list we already
+            # had keeps that list, and its count, and says so in the banner.
             self._headline.setText("Could not check for system updates")
         elif deferred is not None:
             self._headline.setText(f"Update check deferred until {_day(deferred)}")
@@ -816,7 +847,7 @@ class MainWindow(QMainWindow):
         )
         if self._runner.is_running or self._privileged.check_running:
             return
-        if z.error:
+        if z.error and not z.count:
             self.stateChanged.emit(TrayState.ERROR, z.error)
         elif deferred is not None:
             # The whole point of putting it off: the icon stops looking like
@@ -839,25 +870,27 @@ class MainWindow(QMainWindow):
         has = (self._chk_system.isChecked() and z.count > 0) or (
             self._chk_flatpak.isChecked() and fp > 0
         )
-        self._btn_update.setEnabled(has and not self._runner.is_running)
-        # Two buttons offering an update need to say how they differ, or the
-        # user is left guessing which one this situation calls for. Neither is
-        # greyed out: leaving the source in is not a mistake, and it is the one
-        # that works while zypper still has usable details for it on disk.
-        if self._banner_offers_leave_out:
-            names = [name for _alias, name in z.failed_repos]
-            self._btn_update.setText(
-                f"Update with {names[0]} anyway"
-                if len(names) == 1
-                else "Update with them anyway"
-            )
-        else:
-            self._btn_update.setText(_UPDATE_BUTTON_TEXT)
+        # Not just the runner: a check holds zypper's lock for half a minute
+        # at a time, and an update started inside that window is two of our own
+        # jobs fighting over it.
+        self._btn_update.setEnabled(
+            has and not self._busy_with_the_package_system()
+        )
+        # One button, one label. It used to change to "Update with X anyway"
+        # while the banner offered the other half of a choice; there is no
+        # choice to offer any more, because the update gets past an unreachable
+        # source by itself.
+        self._btn_update.setText(_UPDATE_BUTTON_TEXT)
 
     def _set_busy(self, busy: bool, text: str) -> None:
         self._btn_check.setEnabled(not busy)
         self._progress.setVisible(busy)
         self._update_banner_button()
+        # The update button reads check_running through
+        # _busy_with_the_package_system(), so it has to be re-evaluated here as
+        # well as in _render(): a check starting is the moment it has to go
+        # grey, and _render() does not run until the check comes back.
+        self._update_buttons()
         if text:
             self._statusbar(text)
 
@@ -940,7 +973,9 @@ class MainWindow(QMainWindow):
         """
         busy = self._busy_with_the_package_system()
         self._banner_btn.setEnabled(not busy)
-        self._banner_btn_alt.setEnabled(not busy)
+        # Not the second one: the only thing it has ever offered is putting the
+        # check off until tomorrow, which writes a date into this user's
+        # preferences and touches nothing zypper owns.
 
     def _on_banner_button(self) -> None:
         if self._banner_action is not None:
@@ -966,14 +1001,35 @@ class MainWindow(QMainWindow):
         on_click = None
         alt_button = ""
         alt_on_click = None
-        # Read by _update_buttons(), which runs straight after this and gives
-        # the window's own button the other half of the choice. False until
-        # something below claims it, including on the path that hides the
-        # banner entirely.
-        self._banner_offers_leave_out = False
+        # The oldest day any of the missing sources was first found
+        # unreachable, which is what decides between "try again tomorrow" and
+        # "this one is not coming back".
+        since = self._oldest_unreachable(z.failed_repos)
+        # The check failed, a source was unreachable, and nothing was worked
+        # out: the three together mean the details on disk for that source have
+        # gone stale too, which is the one situation the update cannot get
+        # itself past. A held lock is excluded - that is its own problem with
+        # its own button, and it is not what the missing source did.
+        stuck = bool(z.error) and bool(z.failed_repos) and not (
+            z.count or z.locked
+        )
 
         if z.error:
-            parts.append(z.error)
+            # A check that failed while a source was unreachable, having worked
+            # nothing out, is the one case where the window can say something
+            # better than the error itself. sources.py sees only the solver
+            # giving up (NEEDS_A_DECISION) and cannot tell a source that is
+            # switched off from one that is unreachable; helper/check's own
+            # message for the same situation is written in zypper's words, and
+            # a banner is not the place for those.
+            if stuck:
+                parts.append(_stuck_sources_text(z.failed_repos, since))
+            elif z.locked:
+                parts.append(
+                    _locked_text(z.count, _relative_time(self._status.generated))
+                )
+            else:
+                parts.append(z.error)
             problem = True
             # A lock is the one check failure the user can do something about
             # from here, so it is the one that gets a button.
@@ -982,36 +1038,28 @@ class MainWindow(QMainWindow):
                 on_click = self._on_wait_for_lock_clicked
 
         if z.failed_repos and deferred is not None:
-            # Put off until tomorrow, so the paragraph and both buttons go and
+            # Put off until tomorrow, so the paragraph and the button go and
             # one line stays. Nothing else in this method is suppressed: a
             # failed check, a held lock and a missing snapshot plugin are real
             # problems and are not what the user put off.
             parts.append(_deferred_sources_text(z.failed_repos, deferred))
-        elif z.failed_repos:
+        elif z.failed_repos and not stuck:
             # Deliberately does not set `problem`. A source that cannot be
-            # reached is not something wrong with this computer, and the button
-            # below goes straight past it, so it gets plain text rather than
-            # the orange bar.
-            parts.append(_missing_sources_text(z.failed_repos, total))
-            # The upgrade, with the unreachable sources left out for its
-            # duration and put back afterwards. This used to offer to switch
-            # one off for good, which was a trap: measured on a real machine,
-            # switching off a source that installed packages came from leaves
-            # them orphaned, and the next check cannot compute anything at all
-            # (zypper raises a solver question per orphan and, non-interactive,
-            # gives up). Whatever is offered here has to be reversible, and
-            # this is.
-            if not button and z.count:
-                names = [name for _alias, name in z.failed_repos]
-                button = (
-                    f"Update without {names[0]}"
-                    if len(names) == 1
-                    else "Update without them"
-                )
-                on_click = self._on_update_without_unreachable
-                alt_button = "Try again tomorrow"
-                alt_on_click = self._on_defer_clicked
-                self._banner_offers_leave_out = True
+            # reached is not something wrong with this computer: the update
+            # runs anyway, using the details already here for it.
+            #
+            # No button either, for the same reason. There used to be one
+            # offering to leave the source out of the update, and before that
+            # one offering to switch it off for good. Neither could work - a
+            # source zypper has no usable details for is already equivalent to
+            # a disabled one, so switching it off orphans everything installed
+            # from it and buys nothing. The deferral is all that is left,
+            # because it is the only thing here that is genuinely the user's
+            # choice: wait, or update without the newest versions from that
+            # source.
+            parts.append(_missing_sources_text(z.failed_repos, total, since))
+            alt_button = "Try again tomorrow"
+            alt_on_click = self._on_defer_clicked
 
         for alias, name in self._sources_we_switched_off():
             parts.append(
@@ -1040,10 +1088,28 @@ class MainWindow(QMainWindow):
             alt_on_click=alt_on_click,
             # One rule: orange for something wrong with this computer, plain
             # text for everything else. A failed check, a held lock and a
-            # missing snapshot plugin set `problem`; an unreachable source and
-            # a source the user switched off themselves do not.
+            # missing snapshot plugin set `problem`; an unreachable source the
+            # update can get past, and a source the user switched off
+            # themselves, do not.
             tone="warning" if problem else "plain",
         )
+
+    def _oldest_unreachable(self, failed) -> date | None:
+        """When the longest-missing of *failed* was first found unreachable.
+
+        None when nothing is on record, which is the case for the first check
+        after the app is installed and for anyone upgrading from a version that
+        did not keep the dates. The wording then stays at "try again tomorrow",
+        which is the right thing to say when you do not know.
+        """
+        days = [
+            day
+            for day in (
+                self._settings.unreachable_since(alias) for alias, _name in failed
+            )
+            if day is not None
+        ]
+        return min(days) if days else None
 
     def _sources_we_switched_off(self) -> list[tuple[str, str]]:
         """Sources this app disabled that are still disabled, as (alias, name).

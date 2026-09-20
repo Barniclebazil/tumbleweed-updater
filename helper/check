@@ -3,17 +3,25 @@
 
 Runs as root (via pkexec / the systemd timer):
 
-1. put back any software source an interrupted upgrade left switched off,
-2. refresh zypper repositories,
-3. compute a dry-run distribution upgrade,
-4. note whether snapshot support is present,
-5. write the result to the status file the GUI watches.
+1. refresh zypper repositories,
+2. compute a dry-run distribution upgrade,
+3. note whether snapshot support is present,
+4. write the result to the status file the GUI watches.
 
-Step 1 is the crash net for ``run-update --without-unreachable``, which
-switches an unreachable source off for the length of one upgrade. Its own
-finally block covers every ending it lives to see; this covers the ones it does
-not. It has to come before the refresh, or the refresh would report on a set of
-sources the user never chose.
+Steps 1 and 2 in that order are also how ``helper/run-update`` gets past a
+software source that cannot be reached: the dry run uses ``--no-refresh``
+(see :func:`tumbleweed_updater.sources.check_zypper`), so a source the refresh
+could not reach is still described by the details already on this computer and
+its packages are not orphaned. A dup that refreshes for itself refuses to run
+at all in that situation.
+
+If our own upgrade is running, this exits at once and writes nothing. A check
+during a ``zypper dup`` can tell the user nothing it does not already know, and
+the alternative is what used to happen: the retry loop below spent 40 seconds
+losing to our own upgrade and then replaced a perfectly good status file with a
+failure, so the window threw away its list of updates and put up an orange bar
+naming our own zypper's pid. The GUI starts a fresh check the moment an upgrade
+ends, so nothing is lost by standing down.
 
 It never installs anything.
 """
@@ -37,7 +45,13 @@ if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
 from tumbleweed_updater import packagekit, repos, sources, statusfile  # noqa: E402
+from tumbleweed_updater.paths import HELPER_RUN_UPDATE, resolve_helper  # noqa: E402
 from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
+
+# The upgrade helper. Its zypper is what lands in /run/zypp.pid, so it is found
+# by ancestry rather than by name; both spellings are listed because an
+# installed helper and one run from a checkout are different paths.
+_OUR_UPGRADE = tuple({resolve_helper(HELPER_RUN_UPDATE), HELPER_RUN_UPDATE})
 
 # PackageKit holding the zypp lock is the common case: it is D-Bus activated,
 # so anything at all asking it a question starts it as root, and it keeps the
@@ -45,10 +59,6 @@ from tumbleweed_updater.sources import UpdateStatus  # noqa: E402
 # fast when the lock is held rather than waiting, so waiting is up to us.
 _LOCK_MAX_ATTEMPTS = 5  # 1 initial attempt + up to 4 retries
 _LOCK_RETRY_DELAY_S = 10  # so: up to 40s of waiting, plus the per-attempt wait
-
-# The only argument this helper accepts. polkit's exec.path annotation pins the
-# program but never its argv, so it is matched exactly rather than parsed.
-_NO_WAIT = "--no-wait-for-packagekit"
 
 
 def _snapshots_ok() -> bool:
@@ -117,26 +127,25 @@ def _failed_sources(refresh_output: str) -> list[tuple[str, str]]:
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    wait_for_pk = _NO_WAIT not in args
-    unknown = [a for a in args if a != _NO_WAIT]
-    if unknown:
+    # This helper takes no arguments at all. polkit's exec.path annotation pins
+    # the program but never its argv, so anything at all is refused here rather
+    # than parsed. It used to accept --no-wait-for-packagekit, which carried a
+    # preference the scheduled run could not read anyway; waiting is now simply
+    # what it does.
+    if sys.argv[1:]:
         sys.stderr.write(
-            "check: refusing unrecognised option(s): " + " ".join(unknown) + "\n"
+            "check: refusing unrecognised option(s): "
+            + " ".join(sys.argv[1:])
+            + "\n"
         )
         return 2
 
-    # Before anything else asks zypper a question. If an upgrade was cut short
-    # while it had a source switched off for its own use, this puts the source
-    # back, and the refresh below then sees the real set. Ordinarily there is
-    # no note to act on and this costs one failed open().
-    restored = repos.restore_remembered()
-    if restored:
+    # Before the loop, and before anything is written: see the module docstring.
+    if packagekit.holder_is_ours(packagekit.lock_holder(), _OUR_UPGRADE):
         sys.stderr.write(
-            "check: switched back on after an interrupted upgrade: "
-            + ", ".join(restored)
-            + "\n"
+            "check: an upgrade is running; leaving the last result alone\n"
         )
+        return 0
 
     attempts = 0
     refresh_error: str | None = None
@@ -147,14 +156,11 @@ def main() -> int:
 
     while True:
         attempts += 1
-        if wait_for_pk:
-            # Inside the loop, not once before it: whatever woke PackageKit the
-            # first time (Plasma's Discover notifier, typically) can wake it
-            # again between attempts. The wait is short because this loop's own
-            # retry delay already provides most of the patience.
-            _, lock_detail = packagekit.wait_for_lock(
-                timeout_s=packagekit.QUICK_WAIT_S
-            )
+        # Inside the loop, not once before it: whatever woke PackageKit the
+        # first time (Plasma's Discover notifier, typically) can wake it again
+        # between attempts. The wait is short because this loop's own retry
+        # delay already provides most of the patience.
+        _, lock_detail = packagekit.wait_for_lock(timeout_s=packagekit.QUICK_WAIT_S)
         refresh_error, refresh_locked, refresh_output = _refresh()
         zypper = sources.check_zypper()
 

@@ -28,12 +28,16 @@ Features:
    own update notifier, which is the thing that keeps waking it. Discover is
    not affected either way.
 9. Copes with a software source it cannot reach. A third-party repository whose
-   server is down no longer stops the whole upgrade: everything else is
-   installed as usual, and the window names the source that was left out in
-   plain words rather than repeating `zypper`'s error. If it stays down you can
-   switch that source off from the window, and switch it back on later.
-   Switching it off is an ordinary `zypper modifyrepo --disable`, so it lasts
-   until you reverse it and applies system-wide, not just inside this app.
+   server is down no longer stops the whole upgrade. `zypper dup` refuses to
+   run when a repository fails to refresh during its own run, so the helper
+   refreshes everything itself first and then runs the upgrade with
+   `--no-refresh`: everything reachable is fresh from a moment ago, and the
+   missing source is covered by the metadata already on disk. Nothing is
+   disabled and nothing has to be put back. The window names the source in
+   plain words rather than repeating `zypper`'s error, and offers to stop
+   asking until tomorrow. If the source stays away long enough that the
+   metadata on disk is no use either, the window says how long it has been
+   gone and that it needs replacing or removing.
 
 ## PackageKit and Plasma's update notifier
 
@@ -50,11 +54,12 @@ much metadata it fetches. The app handles this in two ways.
    This turns many failures into delays, though not all of them: a long refresh
    can outlast the wait, and the check then reports the lock as it did before.
    Nothing is cancelled, stopped or killed: PackageKit is left alone to complete
-   its job. Only PackageKit is waited for, so if your own `zypper` in a terminal
-   holds the lock the app says so straight away instead of sitting behind it.
-   Switch it off under Settings → "Wait for PackageKit instead of failing"; the
-   scheduled background check always waits, because it runs as a system service
-   and cannot read your settings.
+   its job. It also waits for this app's own background check, which takes the
+   same lock through `zypper` and is the other thing likely to be holding it.
+   It does not wait for anybody else: if your own `zypper` in a terminal has the
+   lock the app says so straight away rather than sitting behind something that
+   may run for an hour. There is no setting for any of this — waiting is simply
+   what it does.
 2. The first time the app runs it offers to switch off Plasma's own update
    notifier, which is the only thing on a stock install that keeps waking
    PackageKit in the first place. This app already reports the same `zypper` and
@@ -131,3 +136,7 @@ logos, recoloured to a single `currentColor` so they follow the Plasma theme:
 
 Both marks are trademarks of SUSE LLC and are used here only to identify the
 distribution this tool updates.
+
+The window's own icon, `data/icons/styles/tumbleweed-window.svg`, is drawn
+here rather than taken from anywhere: a title bar asks for 16 pixels, and
+neither logo above is legible that small.
