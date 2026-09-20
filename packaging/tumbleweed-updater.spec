@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.8.0
+Version:        0.8.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sun Sep 20 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.8.1
+- No changes to the app itself: this release only updates the project's own build and release automation to the current GitHub Actions runtime, so that packaging keeps working when GitHub retires the old one.
+
 * Sun Sep 20 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.8.0
 - Update checks no longer fail when PackageKit is using the package system: the app now waits for it to finish instead, the window offers a one-click retry while the lock is still held, and a one-time question offers to switch off Plasma's own Discover update notifier, which is the thing that keeps waking PackageKit. Discover itself is unaffected.
 
