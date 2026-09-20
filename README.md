@@ -27,6 +27,13 @@ Features:
    The app waits for it instead of failing, and offers to switch off Plasma's
    own update notifier, which is the thing that keeps waking it. Discover is
    not affected either way.
+9. Copes with a software source it cannot reach. A third-party repository whose
+   server is down no longer stops the whole upgrade: everything else is
+   installed as usual, and the window names the source that was left out in
+   plain words rather than repeating `zypper`'s error. If it stays down you can
+   switch that source off from the window, and switch it back on later.
+   Switching it off is an ordinary `zypper modifyrepo --disable`, so it lasts
+   until you reverse it and applies system-wide, not just inside this app.
 
 ## PackageKit and Plasma's update notifier
 

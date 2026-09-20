@@ -745,7 +745,10 @@ class MainWindow(QMainWindow):
             # the text says what happened and the user decides which to act on.
             if not button and len(z.failed_repos) == 1:
                 alias, name = z.failed_repos[0]
-                button = f"Stop using {name}"
+                # Paired with "Switch X back on" below, so the two read as one
+                # setting being changed rather than two unrelated actions. It
+                # is a setting: the change persists until it is reversed.
+                button = f"Switch {name} off"
                 on_click = partial(self._on_stop_using_source, alias, name)
 
         for alias, name in self._sources_we_switched_off():
@@ -809,16 +812,29 @@ class MainWindow(QMainWindow):
     def _on_stop_using_source(self, alias: str, name: str) -> None:
         if self._privileged.repos_running or self._runner.is_running:
             return
+        # Three things the earlier wording left the user to guess at, one per
+        # paragraph: that this lasts until they reverse it (zypper writes
+        # enabled=0 into the source's file and nothing ever writes it back),
+        # that it is a change to the whole computer rather than a setting
+        # inside this app, and that they need not do it at all, since the
+        # upgrade already carries on without the source.
         if (
             QMessageBox.question(
                 self,
-                f"Stop using {name}?",
-                f"Tumbleweed Updater will stop looking to {name} for updates."
+                f"Switch {name} off?",
+                f"Switching {name} off is not just for this update. It stays "
+                "off until you switch it back on, including after a restart, "
+                "and it applies to everything on this computer that installs "
+                "software, not only Tumbleweed Updater."
                 "\n\n"
-                "Anything you already installed from it stays on your computer "
-                "and keeps working. It just won't be offered new versions."
+                f"Anything you already installed from {name} stays on your "
+                "computer and keeps working. It just will not be offered new "
+                "versions."
                 "\n\n"
-                "You can switch it back on from this window at any time.",
+                "You do not have to do this. Updates work without it, and the "
+                f"warning will clear on its own if {name} can be reached "
+                "again. If you do switch it off, this window will remind you, "
+                "with a button to switch it back on.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

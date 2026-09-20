@@ -291,6 +291,29 @@ def _banner_button(win) -> str:
     return win._banner_btn.text() if not win._banner_btn.isHidden() else ""
 
 
+def _press_the_banner_button(win, monkeypatch) -> dict:
+    """Click the banner's button and return the dialog it raised.
+
+    Answers No, so the tests that only read the wording change nothing.
+    """
+    asked = {}
+
+    def fake_question(parent, title, body, *a, **k):
+        asked["title"] = title
+        asked["body"] = body
+        return QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
+    win._banner_btn.click()
+    return asked
+
+
+def _ask_about_switching_off(win, monkeypatch) -> str:
+    """The body of the "switch this source off?" question, for one source."""
+    _apply(win, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
+    return _press_the_banner_button(win, monkeypatch)["body"]
+
+
 def _some_packages(n=3):
     return [
         Package(f"pkg{i}", Action.UPGRADE, "2.0", "1.0", "x86_64") for i in range(n)
@@ -316,7 +339,8 @@ def test_one_unreachable_source_is_explained_in_plain_language(window):
 def test_one_unreachable_source_offers_to_switch_it_off(window):
     _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
 
-    assert _banner_button(window) == "Stop using VLC"
+    # Paired with "Switch VLC back on", so the two read as one setting.
+    assert _banner_button(window) == "Switch VLC off"
 
 
 def test_several_unreachable_sources_are_counted_and_named(window):
@@ -371,10 +395,50 @@ def test_switching_a_source_off_asks_first_and_calls_the_helper(window, monkeypa
 
     window._banner_btn.click()
 
-    assert asked["title"] == "Stop using VLC?"
+    assert asked["title"] == "Switch VLC off?"
     assert "stays on your computer" in asked["body"]
     assert "switch it back on" in asked["body"]
     assert window._privileged.repo_calls == [("vlc", False)]
+
+
+def test_the_question_says_the_change_lasts_until_it_is_reversed(window, monkeypatch):
+    """zypper writes enabled=0 into the source's file and nothing ever writes
+    it back, so nobody may press this thinking it skips one update."""
+    body = _ask_about_switching_off(window, monkeypatch)
+
+    assert "not just for this update" in body
+    assert "until you switch it back on" in body
+    assert "after a restart" in body
+
+
+def test_the_question_says_it_is_not_only_this_app(window, monkeypatch):
+    """YaST, Discover and a plain `zypper dup` all stop seeing the source too,
+    which the earlier wording hid behind "Tumbleweed Updater will stop..."."""
+    body = _ask_about_switching_off(window, monkeypatch)
+
+    assert "everything on this computer" in body
+    assert "not only Tumbleweed Updater" in body
+
+
+def test_the_question_says_the_user_need_not_do_it(window, monkeypatch):
+    """The upgrade already carries on without the source, so this button only
+    silences a warning. For a server that is briefly down, doing nothing is
+    the better answer and the dialog has to say so."""
+    body = _ask_about_switching_off(window, monkeypatch)
+
+    assert "You do not have to do this" in body
+    assert "Updates work without it" in body
+    assert "clear on its own" in body
+
+
+def test_the_question_and_the_button_agree(window, monkeypatch):
+    """A title that does not echo the button leaves the user wondering whether
+    they pressed the right thing."""
+    _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
+    button = _banner_button(window)
+    asked = _press_the_banner_button(window, monkeypatch)
+
+    assert asked["title"] == button + "?"
 
 
 def test_declining_the_question_changes_nothing(window, monkeypatch):
