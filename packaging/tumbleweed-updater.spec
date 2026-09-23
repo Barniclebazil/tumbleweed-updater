@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.11.0
+Version:        0.11.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Wed Sep 23 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.11.1
+- Error messages from a failed update check or a failed update now stay on screen instead of vanishing, a failed update keeps its log when the window is closed, a schedule change that the system refuses is no longer shown as applied, and waiting for the package system now includes this app's own background check.
+
 * Sun Sep 20 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.11.0
 - Updates now install even when a software source can't be reached: the app refreshes what it can and upgrades from what is already on this computer, rather than switching that source off. The update button also waits for a check in progress instead of colliding with it, and the tray icon stays quiet while looking for updates.
 
