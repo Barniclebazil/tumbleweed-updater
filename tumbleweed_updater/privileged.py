@@ -1,6 +1,6 @@
 """Thin wrappers around the pkexec-invoked helpers.
 
-Three helpers are called this way:
+Five helpers are called this way:
 
 * ``check``        - refresh repos + dry-run dup, write the status file. The
                      polkit policy lets an active local session run this without

@@ -182,8 +182,11 @@ class SnapshotsDialog(QDialog):
 
     def _update_buttons(self) -> None:
         s = self._selected()
-        self._btn_rollback.setEnabled(s is not None)
-        self._btn_delete.setEnabled(s is not None)
+        # Snapshot 0 is snapper's name for the running system, not a snapshot:
+        # it cannot be rolled back to or deleted, and snapper refuses both.
+        changeable = s is not None and s.get("number") != 0
+        self._btn_rollback.setEnabled(changeable)
+        self._btn_delete.setEnabled(changeable)
         self._btn_status.setEnabled(self._find_pre_post_partner(s) is not None)
 
     # -- show changes ------------------------------------------------------ #

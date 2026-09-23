@@ -163,6 +163,7 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._buttons = buttons
 
     # -- update behaviour ----------------------------------------------------- #
 
@@ -395,8 +396,12 @@ class SettingsDialog(QDialog):
             # left behind would warn once per settings dialog ever opened.
             self._privileged.intervalFinished.connect(self._interval_done)
             self._interval_connected = True
+            # Greyed out until the helper answers: a second Save would connect
+            # a second time, and that connection would outlive this dialog.
+            self._buttons.setEnabled(False)
             if not self._privileged.set_interval(new.check_interval):
                 self._disconnect_runner()
+                self._keep_old_interval()
                 QMessageBox.warning(
                     self,
                     "Could not change the schedule",
@@ -416,9 +421,21 @@ class SettingsDialog(QDialog):
         except (RuntimeError, TypeError):
             pass  # already gone
 
+    def _keep_old_interval(self) -> None:
+        """Put the stored cadence back to what the timer is still running.
+
+        The rest of the settings are saved before the helper is asked, so a
+        refused or failed change would otherwise leave this dialog showing a
+        schedule the system never adopted.
+        """
+        saved = self._store.load()
+        saved.check_interval = self._prefs.check_interval
+        self._store.save(saved)
+
     def _interval_done(self, ok: bool, message: str) -> None:
         self._disconnect_runner()
         if not ok:
+            self._keep_old_interval()
             QMessageBox.warning(
                 self,
                 "Could not change the schedule",

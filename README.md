@@ -5,7 +5,7 @@ A system-tray update manager for openSUSE Tumbleweed on KDE Plasma.
 Features:
 
 1. Lives in the system tray. The icon follows the Plasma light/dark theme while
-   the system is up to date and turns openSUSE orange when updates are waiting.
+   the system is up to date and turns orange when updates are waiting.
 2. Shows a window listing the pending `zypper dup` and Flatpak updates.
 3. Runs the upgrade in an embedded terminal, so you answer `zypper`'s prompts
    (the resolver's "Choose from above solutions", vendor changes, and so on) as
@@ -14,7 +14,8 @@ Features:
    same pre/post snapshots a manual `sudo zypper dup` produces. The app warns if
    that plugin is missing.
 5. Checks for updates in the background with a systemd timer. The cadence
-   (hourly to weekly, or manual) is set from the app's settings.
+   (hourly to weekly, or manual) is set from the app's settings. On a laptop
+   the scheduled check is skipped while running on battery.
 6. Lets you browse the Btrfs snapshots snapper has taken, see what changed
    in a pre/post pair, roll back to one, or delete one (Menu → Snapshots…).
 7. Returns to a clean state once an update is done. Closing the window to the
@@ -114,14 +115,16 @@ sudo zypper addrepo -f \
 sudo zypper install tumbleweed-updater
 ```
 
-Once installed, the app starts automatically and its background-check timer
-is enabled. You'll find it in the system tray from then on.
+Once installed, the background-check timer is enabled. Launch "Tumbleweed
+Updater" from the application menu the first time. To have it start in the
+system tray at every login, tick "Start automatically at login" in Settings.
 
 ## Run
 
 ```sh
 tumbleweed-updater          # open the window
 tumbleweed-updater --tray   # start hidden in the tray (used for autostart)
+tumbleweed-updater --update # open the window and start the update
 ```
 
 ## Icon credits
@@ -138,5 +141,5 @@ Both marks are trademarks of SUSE LLC and are used here only to identify the
 distribution this tool updates.
 
 The window's own icon, `data/icons/styles/tumbleweed-window.svg`, is drawn
-here rather than taken from anywhere: a title bar asks for 16 pixels, and
+here rather than taken from anywhere: a title bar asks for 14 pixels, and
 neither logo above is legible that small.

@@ -3,7 +3,7 @@
 States:
 
 * **idle**       - monochrome, follows the Plasma light/dark theme.
-* **updates**    - openSUSE orange.
+* **updates**    - orange (Breeze's #f67400, not openSUSE's; see icons.py).
 * **installing** - orange too: there are updates, and they are going in.
 * **checking**   - no icon of its own. The mark keeps saying whatever it
                    already knew, and only the tooltip changes.

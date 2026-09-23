@@ -155,3 +155,46 @@ def test_there_is_no_packagekit_row(app, store, tmp_path, monkeypatch):
     labels = [box.text() for box in dialog.findChildren(QCheckBox)]
     assert not any("PackageKit" in text for text in labels), labels
     dialog.close()
+
+
+class _RecordingRunner(_StubRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = []
+
+    def set_interval(self, label: str) -> bool:
+        self.calls.append(label)
+        return True
+
+
+def test_a_refused_schedule_change_keeps_the_old_schedule(app, store, monkeypatch):
+    """Everything else is saved before the helper is asked. When it then fails
+    (a dismissed password prompt, say) the stored cadence must go back to the
+    one the timer is still running, or Settings shows a schedule the system
+    never adopted."""
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    before = store.load().check_interval
+    runner = _RecordingRunner()
+    dialog = SettingsDialog(store, runner)
+    other = next(label for label in ("daily", "weekly") if label != before)
+    dialog._interval.setCurrentText(other)
+
+    dialog._save()
+    assert runner.calls == [other]
+    assert not dialog._buttons.isEnabled(), "no second Save while one is pending"
+
+    runner.intervalFinished.emit(False, "Not authorised")
+
+    assert store.load().check_interval == before
+
+
+def test_an_accepted_schedule_change_is_kept(app, store):
+    runner = _RecordingRunner()
+    dialog = SettingsDialog(store, runner)
+    dialog._interval.setCurrentText("weekly" if store.load().check_interval != "weekly" else "daily")
+    wanted = dialog._interval.currentText()
+
+    dialog._save()
+    runner.intervalFinished.emit(True, "")
+
+    assert store.load().check_interval == wanted

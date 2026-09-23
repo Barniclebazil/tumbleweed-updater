@@ -7,10 +7,11 @@ Two update sources are supported:
   for a machine-readable dry run and parse the ``<install-summary>`` block.
 * **flatpak** - both the system-wide and per-user installations.
 
-Nothing here needs root: repository *refresh* does, but that is the privileged
-checker's job (:mod:`tumbleweed_updater` ships ``helper/check``). The functions
-below run against already-refreshed metadata (``--no-refresh``) so the GUI can
-re-parse quickly without a password.
+The zypper half needs root: ``zypper dup --dry-run`` refuses to run as a normal
+user even though it changes nothing, so :func:`check_zypper` is only ever called
+from the privileged ``helper/check``, which refreshes first and then runs it
+against that metadata (``--no-refresh``). The Flatpak half runs as the user,
+from the GUI.
 """
 
 from __future__ import annotations

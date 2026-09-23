@@ -48,6 +48,8 @@ terminal.py + pty_session.py        helper/set-interval systemd timer drop-in
 runner.py  command queue            helper/snapshots   list/compare via snapper
                     │                           helper/snapshots-manage
                     │                              rollback/delete via snapper
+                    │                           helper/repos       switch a source
+                    │                              on/off (old button's way back)
                     │  writes                    │
                     └── reads ── /run/tumbleweed-updater/status.json ──┘
 ```
@@ -169,7 +171,9 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `helper/check` puts `still_locked` into `ZypperResult.locked`, which
   `statusfile` carries to the GUI so `MainWindow._render()` can give the orange
   banner its "Wait for it and retry" button (`workers.LockWaiter` keeps the poll
-  off the UI thread). The retry loop (5 attempts, 10s apart) is the real fix for
+  off the UI thread, and passes `workers.our_helpers()` as `ours=` so a lock
+  held by the timer's own check is waited for rather than reported as
+  "held by zypper (pid N)"). The retry loop (5 attempts, 10s apart) is the real fix for
   the failure this was built for; not running the notifier at all is the better
   one.
   **Two of our own jobs must never race for the lock**, which they used to.
@@ -303,6 +307,16 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `problem` for a failed check (including the stuck case above), a held lock
   and a missing snapshot plugin, and deliberately not for an unreachable source
   the update can get past, or a source the user switched off themselves.
+  **Failures of our own jobs are state, not a one-off banner.** Because
+  `_render_banner()` rebuilds the whole banner from the status on every
+  render, a message set directly with `_show_banner()` is wiped by the next
+  render — which is how a failed pkexec check lost its message on the very next
+  line, and a failed run lost its own when the re-check after it came back.
+  So `_check_failure` (cleared by the next successful check) and `_run_failure`
+  (cleared when a run starts or the log is reset) live on the window and
+  `_render_banner()` puts them first, orange. `_run_failure` also stops
+  `closeEvent()` clearing the log on "on_close", since a failed run keeps its
+  log whatever `RESET_AFTER_UPDATE` says.
   The primary banner button — now only "Wait for it and retry" and "Switch X
   back on" — is greyed out (`MainWindow._update_banner_button()`) while a
   check, an update or another source change is running: a check starts by
@@ -369,7 +383,9 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
 `Makefile` mirrors it and `packaging/tumbleweed-updater.spec`'s `%install`
 just calls it (`DESTDIR=… PREFIX=… SITELIB=… sh packaging/install.sh`). All
 three plus `paths.py` must agree on every location. `packaging/build-rpm.sh`
-rolls the `.tar.xz`, runs `rpmbuild -bb`, and copies the result to `dist/`.
+rolls the `.tar.xz`, runs `rpmbuild -bb`, and copies the result to `dist/`;
+`packaging/make-repo.sh` (called by `release.yml`) turns `dist/*.rpm` into the
+zypper repository published on GitHub Pages, signed when `GPG_PRIVATE_KEY` is set.
 `packaging/release.sh <version> <note>` bumps the version in all three places
 (`__init__.py`, `pyproject.toml`, spec `Version:`) + changelog, then commits,
 tags `v<version>` and pushes — the `release.yml` workflow does the rest. Layout: Python package →

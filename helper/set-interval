@@ -35,6 +35,27 @@ def _remove_dropin() -> None:
         pass
 
 
+_RELOAD_FAILED = "The system would not take up the new update-check schedule."
+
+
+def _systemctl(failure: str, *args: str) -> bool:
+    """Run systemctl, writing *failure* to stderr if it did not work.
+
+    The settings dialog shows this helper's last stderr line when it exits
+    non-zero, and keeps the old schedule; a failure swallowed here used to
+    leave the dialog believing a schedule the timer never took up. *failure*
+    is that line, so it is plain words: no command, no exit code.
+    """
+    try:
+        proc = subprocess.run(["systemctl", *args], check=False)
+    except OSError:
+        proc = None
+    if proc is None or proc.returncode != 0:
+        sys.stderr.write(failure + "\n")
+        return False
+    return True
+
+
 def main() -> int:
     if len(sys.argv) != 2 or not is_valid(sys.argv[1]):
         sys.stderr.write(
@@ -44,12 +65,13 @@ def main() -> int:
 
     label = sys.argv[1]
     if label == "manual":
-        subprocess.run(
-            ["systemctl", "disable", "--now", CHECK_TIMER], check=False
+        ok = _systemctl(
+            "The system would not switch the background update check off.",
+            "disable", "--now", CHECK_TIMER,
         )
         _remove_dropin()
-        subprocess.run(["systemctl", "daemon-reload"], check=False)
-        return 0
+        ok = _systemctl(_RELOAD_FAILED, "daemon-reload") and ok
+        return 0 if ok else 1
 
     expr = oncalendar_for(label)
     os.makedirs(os.path.dirname(CHECK_TIMER_DROPIN), exist_ok=True)
@@ -61,11 +83,14 @@ def main() -> int:
             f"OnCalendar={expr}\n"
             "Persistent=true\n"
         )
-    subprocess.run(["systemctl", "daemon-reload"], check=False)
-    subprocess.run(
-        ["systemctl", "enable", "--now", CHECK_TIMER], check=False
+    if not _systemctl(_RELOAD_FAILED, "daemon-reload"):
+        return 1
+    started = _systemctl(
+        "The system would not start the background update check on the new "
+        "schedule.",
+        "enable", "--now", CHECK_TIMER,
     )
-    return 0
+    return 0 if started else 1
 
 
 if __name__ == "__main__":

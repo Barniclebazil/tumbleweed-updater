@@ -46,7 +46,7 @@ class _StubPrivileged(QObject):
     def repos_running(self) -> bool:
         return False
 
-    def run_check(self, wait_for_packagekit: bool = True) -> bool:
+    def run_check(self) -> bool:
         return True
 
     def set_repo_enabled(self, alias: str, enabled: bool) -> bool:
@@ -926,3 +926,97 @@ def test_a_failed_check_is_not_hidden_behind_a_deferral(window):
 
     assert window._headline.text() == "Could not check for system updates"
     assert "using the package system" in window._banner_label.text()
+
+
+# --------------------------------------------------------------------------- #
+# Failures of our own jobs. _render_banner() rebuilds the banner from the
+# status file on every render, so these have to be kept on the window rather
+# than shown once; both used to vanish before anyone could read them.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_failed_check_keeps_its_message_through_the_render(window, monkeypatch):
+    # No status file, so _on_check_finished() falls through to a plain render.
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+
+    window._on_check_finished(False, "Helper not found - is the package installed correctly?")
+
+    assert _banner_showing(window)
+    assert "Update check failed" in window._banner_label.text()
+    assert "Helper not found" in window._banner_label.text()
+
+    # Anything else that re-renders must not take it away either.
+    window._render()
+    assert "Update check failed" in window._banner_label.text()
+
+
+def test_a_successful_check_clears_the_last_failure(window, monkeypatch):
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+    window._on_check_finished(False, "Not authorised")
+
+    window._on_check_finished(True, "")
+
+    # Hiding leaves the label's old text in place, so ask about the banner.
+    assert not _banner_showing(window)
+
+
+def test_a_failed_run_survives_the_recheck_that_follows_it(window, monkeypatch):
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+    _leave_a_finished_update_on_screen(window)
+
+    window._on_run_finished(False, "“Upgrading the system” failed (exit 3).")
+    assert "failed (exit 3)" in window._banner_label.text()
+
+    # The re-check started by _on_run_finished() comes back clean.
+    window._on_check_finished(True, "")
+    assert _banner_showing(window)
+    assert "failed (exit 3)" in window._banner_label.text()
+
+
+def test_clearing_the_log_takes_the_run_failure_with_it(window, monkeypatch):
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+    _leave_a_finished_update_on_screen(window)
+    window._on_run_finished(False, "“Upgrading the system” failed (exit 3).")
+
+    window._btn_hide_log.click()
+
+    assert not _banner_showing(window)
+
+
+def test_closing_to_the_tray_keeps_a_failed_runs_log(window, monkeypatch):
+    """The setting promises a failed run always keeps its log; closing with the
+    default "on_close" used to throw it away."""
+    # Written explicitly: Qt caches the settings file per process, so an
+    # earlier test's "never" would otherwise make this pass for free.
+    _save({"reset_after_update": "on_close"})
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+    _leave_a_finished_update_on_screen(window)
+    window._on_run_finished(False, "“Upgrading the system” failed (exit 3).")
+
+    window.close()
+
+    assert _log_is_showing(window)
+    assert "qt6-declarative-tools" in window._terminal.buffer_text()
+
+
+def test_the_lock_wait_counts_our_own_helpers():
+    """Without them, a lock held by the timer's check came back at once naming
+    a pid that was ours."""
+    from tumbleweed_updater import paths
+    from tumbleweed_updater.workers import our_helpers
+
+    ours = our_helpers()
+    assert paths.HELPER_CHECK in ours
+    assert paths.HELPER_RUN_UPDATE in ours
+
+
+def test_a_single_other_update_is_not_plural():
+    from tumbleweed_updater.mainwindow import _locked_text, _missing_sources_text
+
+    text = _missing_sources_text([("vlc", "VLC")], 1)
+    assert "The other update was checked" in text
+    assert "1 updates" not in text
+
+    text = _locked_text(1, "2 h ago")
+    assert "The update below is the one found" in text
+    assert "1 updates" not in text

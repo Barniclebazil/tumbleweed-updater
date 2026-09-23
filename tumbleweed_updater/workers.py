@@ -1,7 +1,7 @@
 """Background workers for things that would otherwise block the UI thread.
 
-The Flatpak query and the wait for PackageKit run here; the latter polls the
-lock file for up to twenty seconds. The zypper dry-run needs root and is done by
+The Flatpak query and the wait for the package lock run here; the latter polls
+the lock file for up to twenty seconds. The zypper dry-run needs root and is done by
 the privileged ``check`` helper, which writes the status file the GUI watches.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from .packagekit import wait_for_lock
+from .paths import HELPER_CHECK, HELPER_RUN_UPDATE, resolve_helper
 from .sources import FlatpakResult, check_flatpak
 
 
@@ -54,6 +55,24 @@ class FlatpakChecker(QObject):
         self.finished.emit(result)
 
 
+def our_helpers() -> tuple[str, ...]:
+    """Paths whose zypper is ours, for packagekit.holder_is_ours().
+
+    Both spellings of each, the way the helpers list them: the GUI may run from
+    a checkout while the helper that holds the lock is the installed copy, or
+    the other way round. In practice the holder is the systemd timer's check,
+    which the window cannot see starting.
+    """
+    return tuple(
+        {
+            resolve_helper(HELPER_CHECK),
+            HELPER_CHECK,
+            resolve_helper(HELPER_RUN_UPDATE),
+            HELPER_RUN_UPDATE,
+        }
+    )
+
+
 class _LockWaitSignals(QObject):
     done = Signal(bool, str)
 
@@ -65,14 +84,18 @@ class _LockWaitTask(QRunnable):
 
     def run(self) -> None:  # noqa: D401 - QRunnable entry point
         try:
-            free, detail = wait_for_lock()
+            # Our own check counts as well as PackageKit. Without it, a lock
+            # held by the timer's check came back at once as "held by zypper
+            # (pid N)", naming a process that was ours.
+            free, detail = wait_for_lock(ours=our_helpers())
         except Exception as exc:  # pragma: no cover - defensive
             free, detail = False, str(exc)
         self._signals.done.emit(free, detail)
 
 
 class LockWaiter(QObject):
-    """Waits for PackageKit to finish with the zypp lock, off the UI thread.
+    """Waits for PackageKit, or our own check, to let go of the zypp lock, off
+    the UI thread.
 
     Reading /run/zypp.pid and /proc needs no privileges, and nothing here
     changes any state - it only watches.

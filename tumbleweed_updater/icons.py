@@ -67,7 +67,7 @@ _HARDEN_AT = 110
 
 # A style may ship a second drawing for the window icon, <style>-window.svg,
 # for the case deepening cannot fix: artwork whose detail is finer than the
-# 16px the decoration asks for. Only "tumbleweed" has one, and the file says
+# 14px the decoration asks for. Only "tumbleweed" has one, and the file says
 # why. The tray, the settings preview and the launcher never look for it.
 _WINDOW_SUFFIX = "-window"
 
@@ -101,7 +101,7 @@ def _window_svg(style: str) -> tuple[str | None, bool]:
 
     The style's own title-bar drawing if it has one, otherwise the same file
     the tray draws. The flag matters because a title-bar drawing is made for
-    the 16px the decoration asks for and is rendered as drawn, while artwork
+    the 14px the decoration asks for and is rendered as drawn, while artwork
     that was not needs the deepening _one_size() does.
     """
     own = _read(style_icon_file(f"{style}{_WINDOW_SUFFIX}"))

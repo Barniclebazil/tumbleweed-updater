@@ -120,11 +120,17 @@ def test_cancel_interrupts_rather_than_signalling(app):
         [
             Step(
                 "sleeping",
-                ["/bin/sh", "-c", "trap 'exit 42' INT; trap 'exit 43' TERM; sleep 30"],
+                [
+                    "/bin/sh",
+                    "-c",
+                    "trap 'exit 42' INT; trap 'exit 43' TERM; echo TRAPS_SET; sleep 30",
+                ],
             )
         ]
     )
-    assert _wait(lambda: runner.is_running)
+    # Not just is_running: a Ctrl-C that lands before the shell has installed
+    # its trap kills it outright, which reads as "cancelled" rather than exit 42.
+    assert _wait(lambda: "TRAPS_SET" in term.buffer_text())
     assert runner.cancel() is True
     assert _wait(lambda: results != [])
     assert results[0][0] is False

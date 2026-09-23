@@ -79,9 +79,8 @@ _BANNER_STYLES = {
 # it instead.
 _BANNER_MARGINS = {"warning": (8, 6, 8, 6), "plain": (0, 2, 0, 2)}
 
-# The window's own update button when there is nothing special to say. It is
-# relabelled while the banner is offering the other half of the choice; see
-# _update_buttons().
+# The window's own update button. It always carries this label; see
+# _update_buttons() for why it no longer changes.
 _UPDATE_BUTTON_TEXT = "Update now…"
 
 _ACTION_LABELS = {
@@ -140,11 +139,12 @@ def _missing_sources_text(failed, total: int, since=None) -> str:
         )
         theirs = "those software sources"
         again = "the software sources can be reached again"
-    rest = (
-        f"The other {total} updates were checked as usual."
-        if total
-        else "Everything else was checked as usual."
-    )
+    if total == 1:
+        rest = "The other update was checked as usual."
+    elif total:
+        rest = f"The other {total} updates were checked as usual."
+    else:
+        rest = "Everything else was checked as usual."
     return (
         f"{opening} {rest} Programs you have installed from {theirs} keep "
         f"working, however they will not get updates until {again}. "
@@ -216,9 +216,14 @@ def _locked_text(count: int, checked: str) -> str:
         "update check couldn’t run."
     )
     if count:
+        which = (
+            "The update below is the one"
+            if count == 1
+            else f"The {count} updates below are the ones"
+        )
         return (
-            f"{opening} The {count} updates below are the ones found by the "
-            f"last check, {checked}, and nothing has changed since."
+            f"{opening} {which} found by the last check, {checked}, and "
+            "nothing has changed since."
         )
     return f"{opening} Nothing on your computer has changed."
 
@@ -281,6 +286,12 @@ class MainWindow(QMainWindow):
         self._privileged = privileged
         self._status = UpdateStatus()
         self._flatpak_checked = False
+        # Failures of our own jobs, as opposed to anything in the status file.
+        # _render_banner() rebuilds the banner from the status every time, so
+        # a message shown once and not kept here is wiped by the next render -
+        # which, for a failed check, is the very next line.
+        self._check_failure: str | None = None
+        self._run_failure: str | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(window_icon(self._settings.load().icon_style))
@@ -568,11 +579,11 @@ class MainWindow(QMainWindow):
         self._flatpak.start()
 
     def _on_wait_for_lock_clicked(self) -> None:
-        """Wait for PackageKit to finish, then check again."""
+        """Wait for PackageKit or our own check to finish, then check again."""
         if self._privileged.check_running or self._runner.is_running:
             return
         self._banner_btn.setEnabled(False)
-        self._statusbar("Waiting for PackageKit to finish…")
+        self._statusbar("Waiting for the package system to come free…")
         self._lock_waiter.start()
 
     def _on_lock_wait_done(self, free: bool, detail: str) -> None:
@@ -584,10 +595,10 @@ class MainWindow(QMainWindow):
 
     def _on_check_finished(self, ok: bool, message: str) -> None:
         self._set_busy(False, "")
-        if not ok:
-            self._show_banner(f"Update check failed: {message}")
-        else:
-            self._hide_banner()
+        # Kept rather than shown: the render below rebuilds the banner from the
+        # status file, and a banner set here directly never survived it.
+        self._check_failure = None if ok else f"Update check failed: {message}"
+        if ok:
             self._statusbar("Update check complete.")
         # Re-read the status file directly rather than relying on the app's
         # file-system watcher having already fired — don't let a missed or
@@ -646,7 +657,7 @@ class MainWindow(QMainWindow):
         replaced the update list with its own zypper's pid in an orange bar.
         """
         if self._busy_with_the_package_system():
-            self._statusbar("Still checking for updates\u2026")
+            self._statusbar(self._busy_reason())
             return
         prefs = self._settings.load()
         do_zypper = self._chk_system.isChecked() and self._status.zypper.count > 0
@@ -709,6 +720,9 @@ class MainWindow(QMainWindow):
         self._terminal_box.show()
         self._update_log_controls()
         self._terminal.append_notice("\n".join(lines))
+        # A new run makes the last one's failure history; the terminal it
+        # pointed at is about to be reset anyway.
+        self._run_failure = None
         self._set_running(True)
         self.stateChanged.emit(TrayState.INSTALLING, "Installing updates…")
         self._runner.start(steps)
@@ -725,8 +739,15 @@ class MainWindow(QMainWindow):
         self._statusbar(message)
         if ok and self._status.zypper.need_reboot:
             self._handle_reboot_needed()
+        # Kept until the next run or until the log is cleared, not merely
+        # shown: the re-check below ends in a render, which used to wipe it
+        # half a minute later.
+        self._run_failure = None if ok else message
         if not ok:
-            self._show_banner(message)
+            self._render_banner(
+                self._status.zypper, self._visible_total(),
+                self._settings.deferred_until(),
+            )
         # A run that failed keeps its log whatever the preference says: the
         # transcript is the only record of what went wrong.
         if ok and self._settings.load().reset_after_update == "on_finish":
@@ -925,6 +946,13 @@ class MainWindow(QMainWindow):
         """
         if self._runner.is_running:
             return
+        # The failure pointed at the transcript being thrown away here.
+        if self._run_failure is not None:
+            self._run_failure = None
+            self._render_banner(
+                self._status.zypper, self._visible_total(),
+                self._settings.deferred_until(),
+            )
         self._terminal.reset()
         self._terminal_box.hide()
         self.statusBar().clearMessage()
@@ -992,11 +1020,18 @@ class MainWindow(QMainWindow):
 
         More than one of these can be true at once - a source that could not be
         reached *and* no snapshot plugin, say - so the messages are joined
-        rather than one silently hiding another. The button belongs to the
-        first message that wants one, since there is only ever one button.
+        rather than one silently hiding another. The primary button belongs to
+        the first message that wants one; the second only ever offers the
+        deferral.
         """
         parts: list[str] = []
         problem = False
+        # Our own jobs failing come first: they are what just happened, and
+        # nothing in the status file describes them.
+        for failure in (self._run_failure, self._check_failure):
+            if failure:
+                parts.append(failure)
+                problem = True
         button = ""
         on_click = None
         alt_button = ""
@@ -1147,15 +1182,27 @@ class MainWindow(QMainWindow):
     # one of them is orphaned, so the next check gets a solver question per
     # orphan, answers none of them, and computes nothing at all. The window
     # then said "Could not check for system updates" with no way back except
-    # this method's opposite. Whatever the banner offers has to be reversible,
-    # so it now offers the upgrade with the source left out for its duration.
-    # _on_switch_source_back_on() stays, for anything an older version of this
-    # app switched off.
+    # this method's opposite. The banner now offers nothing for an unreachable
+    # source beyond putting the check off: helper/run-update gets past it by
+    # itself. _on_switch_source_back_on() stays, for anything an older version
+    # of this app switched off.
 
     def _on_switch_source_back_on(self, alias: str, name: str) -> None:
         if self._busy_with_the_package_system():
             return
         self._change_source(alias, name, enabled=True)
+
+    def _busy_reason(self) -> str:
+        """What to tell someone whose update request arrived while we are busy."""
+        if self._runner.is_running:
+            return "An update is already running."
+        if self._privileged.repos_running:
+            return "Still changing a software source\u2026"
+        return "Still checking for updates\u2026"
+
+    def _visible_total(self) -> int:
+        fp = self._status.flatpak.count if self._include_flatpak() else 0
+        return self._status.zypper.count + fp
 
     def _busy_with_the_package_system(self) -> bool:
         """Is one of our own jobs holding zypper's lock?
@@ -1255,7 +1302,12 @@ class MainWindow(QMainWindow):
             ):
                 event.ignore()
                 return
-        elif self._settings.load().reset_after_update == "on_close":
+        elif (
+            self._settings.load().reset_after_update == "on_close"
+            and self._run_failure is None
+        ):
+            # A failed run keeps its log, as the setting promises: the
+            # transcript is the only record of what went wrong.
             self._reset_log_view()
         # Hide to tray instead of quitting.
         event.ignore()
