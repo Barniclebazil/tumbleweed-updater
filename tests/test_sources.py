@@ -164,16 +164,39 @@ SOLVER_QUESTION = """<?xml version='1.0'?>
 """
 
 
-def test_a_solver_question_is_explained_rather_than_counted():
+def test_a_solver_question_is_a_decision_not_an_error():
+    """The check worked: its answer is that the user has to choose, and the
+    upgrade (interactive, in the terminal) is where they can."""
     result = sources.parse_zypper_dup_xml(SOLVER_QUESTION)
 
     assert result.packages == []
-    assert result.error
+    assert result.needs_decision
+    assert result.error is None
+
+
+def test_the_decision_notice_is_written_for_anyone():
     # Written for someone who has never heard of a repository, like everything
     # else that reaches the window.
     for jargon in ("repository", "distupgrade", "solver", "zypper", "exit"):
-        assert jargon not in result.error.lower(), jargon
-    assert "switched off" in result.error
+        assert jargon not in sources.NEEDS_A_DECISION.lower(), jargon
+    # It names the way on, which is the button and the terminal.
+    assert "Update now" in sources.NEEDS_A_DECISION
+
+
+def test_check_zypper_does_not_turn_a_question_into_an_exit_code(monkeypatch):
+    """The dry run exits 4 over a question. That used to reach the window as
+    the bare words "zypper exited 4"."""
+    monkeypatch.setattr(
+        sources.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a, returncode=4, stdout=SOLVER_QUESTION, stderr=""
+        ),
+    )
+    result = sources.check_zypper()
+
+    assert result.needs_decision
+    assert result.error is None
 
 
 def test_an_ordinary_prompt_alongside_a_summary_is_not_an_error():

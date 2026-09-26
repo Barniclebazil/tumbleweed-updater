@@ -68,6 +68,14 @@ _OUR_CHECK = tuple({resolve_helper(HELPER_CHECK), HELPER_CHECK})
 # 0 = ok, 102 = reboot needed, 103 = restart needed - all successful upgrades.
 _OK_EXITS = (0, 102, 103)
 
+# Printed rather than paged, so an update message lands in the scrollback. Not
+# plain "cat": zypper checks whether the pager is less by taking the last four
+# characters of $PAGER, and a shorter value makes it abort with
+# std::out_of_range. Measured on zypper 1.14.101: every package installed,
+# then "View the notifications now? y" crashed it with exit 250, and the run
+# was reported as failed. Kept a constant so a test can hold it to that.
+PAGER = "/usr/bin/cat"
+
 
 def _heading(text: str) -> None:
     sys.stdout.write(f"\033[1m==> {text}\033[0m\n")
@@ -228,8 +236,8 @@ def main() -> int:
 
     os.environ.setdefault("TERM", "xterm-256color")
     os.environ.setdefault("LANG", "C.UTF-8")
-    os.environ["PAGER"] = "cat"
-    os.environ["SYSTEMD_PAGER"] = "cat"
+    os.environ["PAGER"] = PAGER
+    os.environ["SYSTEMD_PAGER"] = PAGER
 
     # PackageKit takes the zypp lock whenever something wakes it, and zypper
     # then refuses to start at all. Waiting turns a failed upgrade into a

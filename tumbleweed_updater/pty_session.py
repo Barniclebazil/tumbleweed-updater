@@ -24,6 +24,14 @@ _REAP_ATTEMPTS = 40
 _REAP_INTERVAL_MS = 100
 _REAP_GAVE_UP = -128
 
+# Keeps zypper and flatpak from paging their output, so it lands in the
+# scrollback. The full path is not decoration: zypper checks whether the pager
+# is less by taking the last four characters of $PAGER, and a shorter value
+# makes it abort with std::out_of_range - measured on zypper 1.14.101, after a
+# finished upgrade, at "View the notifications now? y". helper/run-update sets
+# the same value, since pkexec throws this environment away.
+PAGER = "/usr/bin/cat"
+
 
 class PtySession(QObject):
     output = Signal(bytes)
@@ -60,9 +68,8 @@ class PtySession(QObject):
                 "TERM": "xterm-256color",
                 "COLUMNS": str(cols),
                 "LINES": str(rows),
-                # Keep zypper/flatpak from trying to page their output.
-                "PAGER": "cat",
-                "SYSTEMD_PAGER": "cat",
+                "PAGER": PAGER,
+                "SYSTEMD_PAGER": PAGER,
             }
         )
         if env:

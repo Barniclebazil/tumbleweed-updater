@@ -91,6 +91,11 @@ class ZypperResult:
     # these into the "couldn't reach" warning; only the alias is ever passed
     # back to a helper.
     failed_repos: list[tuple[str, str]] = field(default_factory=list)
+    # The dry run stopped at a question from the solver - a clash between
+    # packages, or programs whose source has gone - so no list could be worked
+    # out. Not an error: the upgrade can still run, interactively, and the user
+    # answers the question in the terminal. See NEEDS_A_DECISION.
+    needs_decision: bool = False
 
     @property
     def count(self) -> int:
@@ -138,17 +143,18 @@ class UpdateStatus:
 # zypper
 # --------------------------------------------------------------------------- #
 
-# Read by someone who has never heard of a repository, like everything else
-# that reaches the window. The cause is nearly always the one named here, since
-# an ordinary upgrade does not raise solver questions.
-# Public: mainwindow compares ZypperResult.error against it, to say something
-# better than this when it also knows which source went missing. It travels
-# through the status file as an ordinary string, so equality is enough.
+# What the window says when ZypperResult.needs_decision is set. Read by someone
+# who has never heard of a repository, like everything else that reaches the
+# window. It names no cause on purpose: two packages that clash and programs
+# left behind by a source that went away look the same from here (a question
+# the solver could not ask), and zypper's own description of which it is goes
+# into the terminal as soon as the update starts. That terminal is the way out,
+# exactly as it would be for someone running "sudo zypper dup" themselves.
 NEEDS_A_DECISION = (
-    "The list of updates couldn’t be worked out. Some of the programs you "
-    "have installed came from a software source that is switched off or "
-    "can’t be reached, so there is no newer version to offer them. "
-    "Switching that source back on is usually the fix."
+    "Some updates can’t go ahead as they are, because they clash with "
+    "something already on this computer. Press Update now: the terminal below "
+    "will describe the clash and list the ways to settle it. Type the number "
+    "of the one you want and press Enter."
 )
 
 
@@ -199,11 +205,15 @@ def parse_zypper_dup_xml(xml_text: str) -> ZypperResult:
             # some installed packages came from, and the solver raises one of
             # these per orphaned package ("does not belong to a distupgrade
             # repository and must be replaced"), so nothing at all is computed
-            # and the exit code is a bare 4. Everything it printed is
+            # and the exit code is a bare 4. Two packages that clash raise the
+            # same kind of question. Everything it printed is
             # <message type="info"> and a <prompt>, which is why this looks at
             # the element rather than the words: the words are translated, the
             # element name is not.
-            result.error = NEEDS_A_DECISION
+            #
+            # Not an error. The check worked; the answer is that the user has
+            # to choose, and an interactive `zypper dup` is where they can.
+            result.needs_decision = True
         return result
 
     result.download_size = _int(summary.get("download-size"))
@@ -269,7 +279,14 @@ def check_zypper(timeout: int = 120) -> ZypperResult:
     # Exit codes: 0 ok, 100/101 updates available (for `lu`), 7 zypp locked
     # (see ZYPPER_EXIT_ZYPP_LOCKED), 106 repo issue... For `dup --dry-run` a
     # non-zero code with no parsed packages is a real failure worth showing.
-    if res.error is None and proc.returncode not in (0, 100, 101) and not res.packages:
+    # A question the solver could not ask is its own state, not a failure, and
+    # its exit code (a bare 4) is what it looks like when it is not caught here.
+    if (
+        res.error is None
+        and not res.needs_decision
+        and proc.returncode not in (0, 100, 101)
+        and not res.packages
+    ):
         stderr = proc.stderr.strip().splitlines()
         res.error = stderr[-1] if stderr else f"zypper exited {proc.returncode}"
     return res

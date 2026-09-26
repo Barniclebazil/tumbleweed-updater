@@ -12,6 +12,7 @@ from tumbleweed_updater.settings import (
     Prefs,
     SettingsStore,
     dup_args_from_prefs,
+    interactive_dup_args,
 )
 
 
@@ -348,3 +349,21 @@ def test_a_damaged_deferral_is_discarded_rather_than_raised(app):
 
     assert store.deferred_until() is None
     assert store._s.value("check/deferredUntil", "", str) == ""
+
+
+def test_an_interactive_run_drops_only_the_options_that_stop_zypper_asking():
+    args = dup_args_from_prefs(
+        Prefs(
+            dup_non_interactive=True,
+            dup_download_in_advance=True,
+            zypper_dup_args="--no-confirm --details",
+        )
+    )
+    assert "-y" in args and "--no-confirm" in args
+
+    assert interactive_dup_args(args) == [
+        "--auto-agree-with-licenses",
+        "--download",
+        "in-advance",
+        "--details",
+    ]

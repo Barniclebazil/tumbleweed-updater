@@ -169,7 +169,15 @@ def main() -> int:
             break
         time.sleep(_LOCK_RETRY_DELAY_S)
 
-    if zypper.error is None and refresh_error and not zypper.packages:
+    # Not over a question from the solver: the dry run did work something out,
+    # namely that the user has to choose, and the window says so in its own
+    # words (with the missing source named, when there is one).
+    if (
+        zypper.error is None
+        and refresh_error
+        and not zypper.packages
+        and not zypper.needs_decision
+    ):
         zypper.error = f"repository refresh failed: {refresh_error}"
 
     # Recorded whether or not the dry run found packages. When it did, this is

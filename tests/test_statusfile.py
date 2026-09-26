@@ -134,3 +134,17 @@ def test_a_malformed_failed_repos_entry_is_skipped():
         {"zypper": {"failed_repos": [["vlc", "VLC"], "nonsense", ["only-one"], None]}}
     )
     assert status.zypper.failed_repos == [("vlc", "VLC")]
+
+
+def test_a_needed_decision_survives_the_round_trip(tmp_path):
+    path = os.path.join(tmp_path, "status.json")
+    status = _sample()
+    status.zypper.needs_decision = True
+    statusfile.write(status, path)
+
+    assert statusfile.read(path).zypper.needs_decision
+
+
+def test_a_status_file_without_needs_decision_reads_as_no():
+    status = statusfile.from_dict({"zypper": {"packages": []}})
+    assert status.zypper.needs_decision is False

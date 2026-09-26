@@ -28,10 +28,10 @@ from . import APP_NAME, __version__
 from .icons import window_icon
 from .repos import list_repos
 from .runner import UpdateRunner
-from .settings import SettingsStore, dup_args_from_prefs
+from .settings import SettingsStore, dup_args_from_prefs, interactive_dup_args
 from .settingsdialog import SettingsDialog
 from .snapshotsdialog import SnapshotsDialog
-from .sources import Action, UpdateStatus, human_bytes
+from .sources import NEEDS_A_DECISION, Action, UpdateStatus, human_bytes
 from .statusfile import read as read_status
 from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
@@ -82,6 +82,11 @@ _BANNER_MARGINS = {"warning": (8, 6, 8, 6), "plain": (0, 2, 0, 2)}
 # The window's own update button. It always carries this label; see
 # _update_buttons() for why it no longer changes.
 _UPDATE_BUTTON_TEXT = "Update now…"
+
+# Headline and tray tooltip when the check stopped at a question from the
+# solver (ZypperResult.needs_decision). The same words in both places so the
+# panel and the window cannot disagree.
+_WAITING_FOR_A_CHOICE = "Updates are waiting for a choice from you"
 
 _ACTION_LABELS = {
     Action.UPGRADE: "upgrade",
@@ -171,13 +176,18 @@ def _closing(names: list[str], since) -> str:
     )
 
 
-def _stuck_sources_text(failed, since) -> str:
+def _stuck_sources_text(failed, since, *, can_choose: bool = False) -> str:
     """The notice when the check could not work anything out at all.
 
-    NEEDS_A_DECISION on its own says a source is "switched off or can't be
-    reached", because sources.py has only the solver's behaviour to go on. Here
-    the window also knows which source went missing and when, so it can say the
-    thing that is actually true and name the way out.
+    NEEDS_A_DECISION on its own names no cause, because sources.py has only the
+    solver's behaviour to go on. Here the window also knows which source went
+    missing and when, so it can say the thing that is actually true and name
+    the way out.
+
+    *can_choose* is set when the solver stopped at a question rather than
+    failing outright. The update button is live then, and answering in the
+    terminal - keeping what is installed, say - is what someone at a terminal
+    running `sudo zypper dup` would do, so the notice says it can be done here.
     """
     names = [name for _alias, name in failed]
     one = len(names) == 1
@@ -192,12 +202,18 @@ def _stuck_sources_text(failed, since) -> str:
         them = "them"
         been = "They have"
     aged = f" {been} not been reachable since {_day(since)}." if since else ""
+    choose = (
+        " Or press Update now and choose, in the terminal below, what happens "
+        f"to the programs that came from {them}."
+        if can_choose
+        else ""
+    )
     return (
         f"The list of updates couldn’t be worked out. {subject} be "
         f"reached, and there are no longer enough details about {them} on this "
         f"computer to work the rest out without {them}.{aged} Replace or "
         f"remove {them} in YaST → Software Repositories, or wait for the "
-        "other end to come back."
+        f"other end to come back.{choose}"
     )
 
 
@@ -660,7 +676,10 @@ class MainWindow(QMainWindow):
             self._statusbar(self._busy_reason())
             return
         prefs = self._settings.load()
-        do_zypper = self._chk_system.isChecked() and self._status.zypper.count > 0
+        do_zypper = self._chk_system.isChecked() and self._system_update_possible()
+        # The check stopped at a question from the solver. This run is where
+        # the user answers it, so it must be allowed to ask.
+        ask = do_zypper and self._status.zypper.needs_decision
         flatpak_refs = self._status.flatpak.refs if prefs.include_flatpak else []
         do_fp_sys = self._chk_flatpak.isChecked() and any(
             r.installation == "system" for r in flatpak_refs
@@ -672,6 +691,8 @@ class MainWindow(QMainWindow):
             return
 
         dup_args = dup_args_from_prefs(prefs)
+        if ask:
+            dup_args = interactive_dup_args(dup_args)
 
         lines = ["The following will run in the terminal below:"]
         if do_zypper:
@@ -691,10 +712,10 @@ class MainWindow(QMainWindow):
             notes = []
             if prefs.dup_allow_vendor_change:
                 notes.append("allow packages to change vendor/repository")
-            if prefs.dup_non_interactive:
+            if prefs.dup_non_interactive and not ask:
                 notes.append(
-                    "skip confirmation prompts — zypper auto-applies its first "
-                    "fix for any conflict"
+                    "skip confirmation prompts — a clash between packages "
+                    "stops the update instead of asking"
                 )
             if prefs.dup_download_in_advance:
                 notes.append("download everything before installing")
@@ -707,6 +728,18 @@ class MainWindow(QMainWindow):
             # Spell the command out: the free-text options field is stored in
             # the user's config, so this is the only place the exact argument
             # list that will run as root is visible.
+            if ask:
+                lines.append("")
+                lines.append(
+                    "This update needs a choice from you. zypper will describe "
+                    "the clash and list numbered ways to settle it: type a "
+                    "number and press Enter."
+                )
+                if prefs.dup_non_interactive:
+                    lines.append(
+                        "It will ask for confirmation this time, even though "
+                        "Settings says not to, because the choice is yours."
+                    )
             lines.append("")
             lines.append("  $ zypper dup " + " ".join(dup_args))
 
@@ -798,6 +831,11 @@ class MainWindow(QMainWindow):
                     for p in z.packages
                 ],
             )
+        elif z.needs_decision:
+            # Nothing to list, since the solver stopped before listing it, but
+            # an empty table under a "System upgrade" tickbox reads as nothing
+            # to do.
+            self._add_group("System upgrade — waiting for your choice", [])
         if fp_count:
             self._add_group(
                 f"Flatpak — {f.count} app(s)",
@@ -811,11 +849,11 @@ class MainWindow(QMainWindow):
 
         # A category defaults to "checked" when it first has something to do;
         # an explicit uncheck is kept as long as the category stays available.
-        for chk, count in (
-            (self._chk_system, z.count),
-            (self._chk_flatpak, fp_count),
+        for chk, available in (
+            (self._chk_system, self._system_update_possible()),
+            (self._chk_flatpak, fp_count > 0),
         ):
-            if count == 0:
+            if not available:
                 chk.setChecked(False)
                 chk.setEnabled(False)
             else:
@@ -834,6 +872,10 @@ class MainWindow(QMainWindow):
             # with nothing. A check that lost the lock over a list we already
             # had keeps that list, and its count, and says so in the banner.
             self._headline.setText("Could not check for system updates")
+        elif z.needs_decision and not z.count:
+            # Not deferrable and not "up to date": the updates are there, and
+            # waiting on the user rather than on anyone's server.
+            self._headline.setText(_WAITING_FOR_A_CHOICE)
         elif deferred is not None:
             self._headline.setText(f"Update check deferred until {_day(deferred)}")
         elif total == 0:
@@ -870,6 +912,10 @@ class MainWindow(QMainWindow):
             return
         if z.error and not z.count:
             self.stateChanged.emit(TrayState.ERROR, z.error)
+        elif z.needs_decision and not z.count:
+            # UPDATES, not ERROR: there are updates, and this is also the state
+            # that lets the tray menu's "Update now…" start the run that asks.
+            self.stateChanged.emit(TrayState.UPDATES, _WAITING_FOR_A_CHOICE)
         elif deferred is not None:
             # The whole point of putting it off: the icon stops looking like
             # there is something to attend to.
@@ -885,10 +931,20 @@ class MainWindow(QMainWindow):
 
     # -- ui state helpers ------------------------------------------------- #
 
-    def _update_buttons(self) -> None:
+    def _system_update_possible(self) -> bool:
+        """Whether there is a system upgrade to start.
+
+        Not only when the check listed packages. When it stopped at a question
+        from the solver it listed none, and the upgrade is the only place the
+        user can answer that question - so it has to stay startable, as
+        `sudo zypper dup` would be.
+        """
         z = self._status.zypper
+        return z.count > 0 or z.needs_decision
+
+    def _update_buttons(self) -> None:
         fp = self._status.flatpak.count if self._include_flatpak() else 0
-        has = (self._chk_system.isChecked() and z.count > 0) or (
+        has = (self._chk_system.isChecked() and self._system_update_possible()) or (
             self._chk_flatpak.isChecked() and fp > 0
         )
         # Not just the runner: a check holds zypper's lock for half a minute
@@ -919,7 +975,7 @@ class MainWindow(QMainWindow):
         self._btn_update.setVisible(not running)
         self._btn_cancel.setVisible(running)
         self._btn_check.setEnabled(not running)
-        self._chk_system.setEnabled(not running and self._status.zypper.count > 0)
+        self._chk_system.setEnabled(not running and self._system_update_possible())
         self._chk_flatpak.setEnabled(
             not running and self._status.flatpak.count > 0
         )
@@ -1045,21 +1101,32 @@ class MainWindow(QMainWindow):
         # gone stale too, which is the one situation the update cannot get
         # itself past. A held lock is excluded - that is its own problem with
         # its own button, and it is not what the missing source did.
-        stuck = bool(z.error) and bool(z.failed_repos) and not (
-            z.count or z.locked
-        )
+        stuck = (bool(z.error) or z.needs_decision) and bool(
+            z.failed_repos
+        ) and not (z.count or z.locked)
 
-        if z.error:
-            # A check that failed while a source was unreachable, having worked
-            # nothing out, is the one case where the window can say something
-            # better than the error itself. sources.py sees only the solver
-            # giving up (NEEDS_A_DECISION) and cannot tell a source that is
-            # switched off from one that is unreachable; helper/check's own
-            # message for the same situation is written in zypper's words, and
-            # a banner is not the place for those.
-            if stuck:
-                parts.append(_stuck_sources_text(z.failed_repos, since))
-            elif z.locked:
+        if z.needs_decision and not z.count and not stuck:
+            # Plain, not orange: nothing is wrong with this computer, and the
+            # way on is the update button, not the banner. The words stay off
+            # the cause, which zypper states itself once the run starts.
+            parts.append(NEEDS_A_DECISION)
+
+        if stuck:
+            # A check that worked nothing out while a source was unreachable is
+            # the one case where the window can say something better than the
+            # error itself. sources.py sees only the solver giving up
+            # (needs_decision) and cannot tell a source that is switched off
+            # from one that is unreachable; helper/check's own message for the
+            # same situation is written in zypper's words, and a banner is not
+            # the place for those.
+            parts.append(
+                _stuck_sources_text(
+                    z.failed_repos, since, can_choose=z.needs_decision
+                )
+            )
+            problem = True
+        elif z.error:
+            if z.locked:
                 parts.append(
                     _locked_text(z.count, _relative_time(self._status.generated))
                 )

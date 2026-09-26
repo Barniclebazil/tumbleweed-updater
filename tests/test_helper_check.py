@@ -200,6 +200,29 @@ def test_a_source_that_could_not_be_reached_is_recorded(monkeypatch, main_env):
     assert status.zypper.error is None
 
 
+def test_a_question_from_the_solver_is_not_turned_into_a_failed_check(
+    monkeypatch, main_env
+):
+    """An unreachable source and a question together: the window names the
+    source and offers the terminal, which a "refresh failed" error would
+    replace with zypper's own words."""
+    monkeypatch.setattr(
+        helper_check, "_refresh", lambda: ("Repository 'VLC' is invalid.", False, "out")
+    )
+    monkeypatch.setattr(helper_check, "_failed_sources", lambda output: [("vlc", "VLC")])
+    monkeypatch.setattr(
+        helper_check.sources,
+        "check_zypper",
+        lambda: sources.ZypperResult(needs_decision=True),
+    )
+
+    assert helper_check.main() == 0
+    status = main_env["written"]["status"]
+    assert status.zypper.needs_decision
+    assert status.zypper.error is None
+    assert status.zypper.failed_repos == [("vlc", "VLC")]
+
+
 def test_nothing_is_recorded_when_the_refresh_worked(monkeypatch, main_env):
     monkeypatch.setattr(helper_check, "_refresh", lambda: (None, False, "all fine"))
     monkeypatch.setattr(

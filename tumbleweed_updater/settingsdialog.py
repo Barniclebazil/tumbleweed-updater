@@ -188,11 +188,10 @@ class SettingsDialog(QDialog):
         self._non_interactive.setToolTip(
             "Adds -y --auto-agree-with-licenses, so zypper never pauses for "
             "'Continue? [y/n]' and auto-accepts licence agreements.\n\n"
-            "Warning: if the upgrade hits a dependency conflict, zypper "
-            "automatically applies its first proposed fix, which can remove or "
-            "downgrade packages unexpectedly. On a rolling release, leave this "
-            "off unless it is a routine update and you will still check the "
-            "terminal output."
+            "If the upgrade hits a clash between packages, zypper does not "
+            "pick a fix for you: it stops, and nothing is installed. When the "
+            "update check has already found such a clash, the update asks you "
+            "anyway, since the choice can only be yours."
         )
         grid.addRow("", self._non_interactive)
 

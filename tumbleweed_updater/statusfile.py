@@ -44,6 +44,9 @@ def to_dict(status: UpdateStatus) -> dict:
             "failed_repos": [
                 [alias, name] for alias, name in status.zypper.failed_repos
             ],
+            # Also added after SCHEMA 1, read back with .get: an older file
+            # reads as "no decision needed", and the next check rewrites it.
+            "needs_decision": status.zypper.needs_decision,
             "download_size": status.zypper.download_size,
             "space_diff": status.zypper.space_diff,
             "need_reboot": status.zypper.need_reboot,
@@ -82,6 +85,7 @@ def from_dict(data: dict) -> UpdateStatus:
         error=z.get("error"),
         locked=bool(z.get("locked", False)),
         failed_repos=_repo_pairs(z.get("failed_repos")),
+        needs_decision=bool(z.get("needs_decision", False)),
         download_size=int(z.get("download_size", 0) or 0),
         space_diff=int(z.get("space_diff", 0) or 0),
         need_reboot=bool(z.get("need_reboot", False)),

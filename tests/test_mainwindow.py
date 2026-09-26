@@ -6,6 +6,7 @@ clears it. These cover when that happens and when it must not.
 """
 
 import os
+from dataclasses import replace
 from datetime import date, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -407,15 +408,15 @@ def test_a_check_that_worked_out_nothing_at_all_names_the_source(window):
     """The one case the update cannot get itself past: the source is gone and
     the details on disk for it have gone stale too, so the solver has nothing
     to offer for the programs that came from it. sources.py can only say "a
-    software source that is switched off or can't be reached"; here the window
-    knows which one, and since when."""
+    that a decision is needed; here the window knows which source is behind
+    it, and since when."""
     store = SettingsStore()
     store._s.setValue("sources/unreachableSince", [f"vlc|{_gone_since(11)}"])
     store._s.sync()
 
     text = _apply(
         window,
-        error=NEEDS_A_DECISION,
+        needs_decision=True,
         failed_repos=[("vlc", "VLC")],
     )
 
@@ -431,7 +432,7 @@ def test_a_check_that_worked_out_nothing_at_all_names_the_source(window):
 def test_a_stuck_check_says_nothing_about_the_other_updates(window):
     """The ordinary paragraph would claim "everything else was checked as
     usual", which is exactly what did not happen."""
-    text = _apply(window, error=NEEDS_A_DECISION, failed_repos=[("vlc", "VLC")])
+    text = _apply(window, needs_decision=True, failed_repos=[("vlc", "VLC")])
 
     assert "checked as usual" not in text
     assert "Try again tomorrow" not in text
@@ -1020,3 +1021,82 @@ def test_a_single_other_update_is_not_plural():
     text = _locked_text(1, "2 h ago")
     assert "The update below is the one found" in text
     assert "1 updates" not in text
+
+
+# --------------------------------------------------------------------------- #
+# A question only the user can answer.
+#
+# The check's dry run is non-interactive, so a clash between packages stops it
+# at the solver's "Choose from above solutions" with nothing listed. The
+# upgrade itself is where that question can be answered, exactly as at a
+# terminal running `sudo zypper dup`, so it has to stay startable - and it has
+# to be allowed to ask.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_question_keeps_the_update_button_live(window):
+    _apply(window, needs_decision=True)
+
+    assert window._btn_update.isEnabled()
+    assert window._chk_system.isEnabled() and window._chk_system.isChecked()
+    assert window._headline.text() == "Updates are waiting for a choice from you"
+
+
+def test_a_question_is_explained_without_orange(window):
+    text = _apply(window, needs_decision=True)
+
+    assert text == NEEDS_A_DECISION
+    # Nothing is wrong with this computer; the way on is the button.
+    assert "#f67400" not in window._banner.styleSheet()
+
+
+def test_a_question_asks_for_attention_in_the_tray(window):
+    """UPDATES, which is also what lets the tray menu start the run."""
+    seen = []
+    window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
+    _apply(window, needs_decision=True)
+
+    assert seen[-1] == (
+        TrayState.UPDATES, "Updates are waiting for a choice from you"
+    )
+
+
+def test_the_run_that_answers_a_question_is_allowed_to_ask(window, monkeypatch):
+    prefs = SettingsStore().load()
+    SettingsStore().save(replace(prefs, dup_non_interactive=True))
+    _apply(window, needs_decision=True)
+
+    argv = _start_update(window, monkeypatch)
+
+    assert argv is not None
+    assert "-y" not in argv and "--no-confirm" not in argv
+    # The licence answer is a different question, already settled in Settings.
+    assert "--auto-agree-with-licenses" in argv
+    assert "needs a choice from you" in window._terminal.buffer_text()
+
+
+def test_an_ordinary_run_still_honours_no_confirm(window, monkeypatch):
+    prefs = SettingsStore().load()
+    SettingsStore().save(replace(prefs, dup_non_interactive=True))
+    _ready_to_update(window)
+
+    argv = _start_update(window, monkeypatch)
+
+    assert "-y" in argv
+
+
+def test_a_stuck_check_offers_the_terminal_when_there_is_a_question(window):
+    text = _apply(window, needs_decision=True, failed_repos=[("vlc", "VLC")])
+
+    assert "Or press Update now" in text
+    assert window._btn_update.isEnabled()
+
+
+def test_a_stuck_check_without_a_question_does_not(window):
+    """Nothing to start, so nothing to press."""
+    text = _apply(
+        window, error="repository refresh failed", failed_repos=[("vlc", "VLC")]
+    )
+
+    assert "Or press Update now" not in text
+    assert not window._btn_update.isEnabled()

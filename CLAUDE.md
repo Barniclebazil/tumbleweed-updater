@@ -128,6 +128,31 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   (reboot/restart needed) to success. `runner.py` also treats 0/102/103 as OK.
   `MainWindow._on_update_clicked()` prints the exact argv into the terminal
   before starting, since the free-text options field lives in the user's config.
+  `-y` is zypper's non-interactive mode, and on a clash between packages its
+  answer is **cancel** (`(c): c`, exit 4), not the first solution; that would be
+  `--force-resolution`, which is not on the allow-list.
+  **A question from the solver is a state, not an error.** The check's dry run
+  is `--non-interactive`, so a clash (or programs whose source has gone) stops
+  it at "Choose from above solutions" with nothing listed.
+  `parse_zypper_dup_xml()` sets `ZypperResult.needs_decision` for that (a
+  `<prompt>` with no `<install-summary>`), carried through `statusfile`, and
+  `MainWindow._system_update_possible()` (`count > 0 or needs_decision`) keeps
+  the update button, the system tickbox and the tray's "Update now…"
+  (`TrayState.UPDATES`) live, because an interactive `zypper dup` in the
+  terminal is the only place the user can answer — which is what `sudo zypper
+  dup` offers at a shell. That run goes through
+  `settings.interactive_dup_args()`, dropping `-y`/`--no-confirm` whatever
+  Settings says, and the terminal intro tells the user to type a number. The
+  banner is `sources.NEEDS_A_DECISION`, plain, and names no cause, since the
+  terminal is about to name it in zypper's own words.
+  **`PAGER` must be at least four characters**, which is why it is
+  `/usr/bin/cat` in both `helper/run-update` and `pty_session.py`
+  (`PAGER` constants, `tests/test_pager.py`). zypper checks for `less` by
+  taking the last four characters of `$PAGER`; with `PAGER=cat` it aborted
+  with `std::out_of_range`, exit 250, at "View the notifications now? y" —
+  after every package had installed, so the run was reported as failed and the
+  Flatpak steps skipped. Measured on zypper 1.14.101. A user's own shell has
+  `less`, which is why `sudo zypper dup` never showed it.
 * **`terminal.py`** is a real terminal: `pty_session.py` runs the child on a PTY
   wired to a `QSocketNotifier`; `_Screen` subclasses `pyte.Screen` to keep a
   scrollback deque. `runner.py` drives a queue of steps (zypper dup → flatpak
@@ -255,8 +280,9 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   openSUSE also ships under a different vendor; the solver then raised a
   question per orphan, `--non-interactive` answered none, and nothing at all
   was computed. That is what `sources.parse_zypper_dup_xml()` turns into
-  `NEEDS_A_DECISION` (triggered by a `<prompt>` with no `<install-summary>`:
-  the element name is not translated, its text is). So neither
+  `needs_decision` (triggered by a `<prompt>` with no `<install-summary>`:
+  the element name is not translated, its text is; see Update options for
+  what the window does with it). So neither
   `run-update --without-unreachable` nor the older "switch it off for good"
   button exists any more, and nothing writes to
   `SettingsStore.disabled_sources()` — that list and

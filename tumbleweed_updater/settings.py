@@ -338,3 +338,21 @@ def dup_args_from_prefs(p: Prefs) -> list[str]:
             continue
         args.append(token)
     return args
+
+
+# The two spellings of "do not ask me anything", which on a clash between
+# packages means "cancel": zypper's non-interactive answer to the solver's
+# question is to give up, not to pick a solution (that is --force-resolution,
+# which is not on the allow-list).
+_NO_CONFIRM = ("-y", "--no-confirm")
+
+
+def interactive_dup_args(args: list[str]) -> list[str]:
+    """*args* without the options that stop zypper asking.
+
+    For the run that exists to ask: when the check found a question only the
+    user can answer, a run that will not ask it can only fail. Everything else
+    stays, --auto-agree-with-licenses included, since that answers a different
+    question the user already settled in Settings.
+    """
+    return [a for a in args if a not in _NO_CONFIRM]
