@@ -15,7 +15,9 @@ import pytest
 from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from tumbleweed_updater import dialogs
 from tumbleweed_updater.mainwindow import MainWindow
+from tumbleweed_updater.privileged import HELPER_MISSING
 from tumbleweed_updater.tray import TrayState
 from tumbleweed_updater.repos import Repo, ReposResult
 from tumbleweed_updater.runner import Step
@@ -164,9 +166,7 @@ def test_a_failed_run_always_keeps_its_log(window):
 def test_a_run_still_in_flight_is_never_reset(window, monkeypatch):
     """Closing mid-update keeps it running in the background, and its log is
     the only view onto it."""
-    monkeypatch.setattr(
-        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
-    )
+    monkeypatch.setattr(dialogs, "ask", lambda *a, **k: True)
     window._terminal_box.show()
     window._runner.start([Step("sleeping", ["/bin/sh", "-c", "echo mid-run; sleep 30"])])
     assert _pump_until(lambda: "mid-run" in window._terminal.buffer_text())
@@ -314,8 +314,10 @@ def test_one_unreachable_source_is_explained_in_plain_language(window):
     )
 
     assert "VLC" in text
-    assert "left out" in text
-    assert "The other 43 updates were checked as usual." in text
+    assert "not included in this check" in text
+    # Not "the other 43 updates": the count includes Flatpak updates, and the
+    # missing source's own updates are not among them.
+    assert "found the 43 updates below" in text
     assert "keep working" in text
     # Not a promise that they will install: zypper refuses the upgrade outright
     # once it has no usable details left for the missing source, and says the
@@ -348,7 +350,7 @@ def test_a_source_that_has_only_just_gone_is_a_passing_problem(window):
         window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")]
     )
 
-    assert "worth trying again tomorrow" in text
+    assert "try again tomorrow" in text
     assert "YaST" not in text
 
 
@@ -367,12 +369,12 @@ def test_a_source_that_has_been_gone_for_days_stops_being_one(window):
         window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")]
     )
 
-    assert "worth trying again tomorrow" not in text
+    assert "try again tomorrow" not in text
     assert "not been reachable since" in text
-    assert "replace or remove" in text
+    assert "Find a working address for it, or remove it" in text
     assert "YaST → Software Repositories" in text
     # The first half is unchanged: the other updates are still fine.
-    assert "The other 43 updates were checked as usual." in text
+    assert "found the 43 updates below" in text
 
 
 def test_the_wording_stays_patient_when_no_date_is_known(window):
@@ -384,7 +386,7 @@ def test_the_wording_stays_patient_when_no_date_is_known(window):
         window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")]
     )
 
-    assert "worth trying again tomorrow" in text
+    assert "try again tomorrow" in text
 
 
 def test_the_oldest_of_several_sources_decides(window):
@@ -423,7 +425,11 @@ def test_a_check_that_worked_out_nothing_at_all_names_the_source(window):
     assert NEEDS_A_DECISION not in text
     assert "VLC" in text
     assert "not been reachable since" in text
-    assert "Replace or remove it in YaST → Software Repositories" in text
+    assert "nothing has been installed" in text
+    assert (
+        "Find a working address for it, or remove it, in YaST → Software "
+        "Repositories" in text
+    )
     # It is a real problem with this computer's software sources, so it keeps
     # the orange.
     assert "#f67400" in window._banner.styleSheet()
@@ -438,12 +444,15 @@ def test_a_stuck_check_says_nothing_about_the_other_updates(window):
     assert "Try again tomorrow" not in text
 
 
-def test_a_check_that_failed_for_its_own_reasons_keeps_its_message(window):
-    """Only a check that came back with nothing *and* a missing source is
-    rewritten. Anything else says what it says."""
+def test_a_check_that_failed_for_its_own_reasons_keeps_its_detail(window):
+    """Only a check that came back with nothing *and* a missing source gets
+    the missing-source advice. Anything else gets the window's own plain
+    sentence, with zypper's or the helper's words kept in the tooltip."""
     text = _apply(window, error="zypper is not installed")
 
-    assert text == "zypper is not installed"
+    assert text.startswith("The update check could not finish.")
+    assert "zypper" not in text
+    assert "zypper is not installed" in window._banner_label.toolTip()
 
 
 def test_nothing_is_offered_when_there_is_no_upgrade_to_run(window):
@@ -503,7 +512,7 @@ def test_an_unreachable_source_is_a_warning_not_an_error(window):
     "Update now" dialog offers a way straight past it."""
     _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
 
-    assert "43 update(s) available" in window._headline.text()
+    assert "43 updates available" in window._headline.text()
     assert "#f67400" not in window._banner.styleSheet()
 
 
@@ -739,7 +748,7 @@ def test_a_locked_check_keeps_the_list_it_could_not_replace(window):
 
     text = _locked(window)
 
-    assert window._headline.text() == "42 update(s) available"
+    assert window._headline.text() == "42 updates available"
     assert window._status.zypper.count == 42
     # "Last checked" belongs to the check that produced the list.
     assert window._subline.text() == before
@@ -761,14 +770,14 @@ def test_a_locked_check_over_a_list_is_not_an_error_in_the_tray(window):
     window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
     _locked(window)
 
-    assert seen[-1] == (TrayState.UPDATES, "42 update(s) available")
+    assert seen[-1] == (TrayState.UPDATES, "42 updates available")
 
 
 def test_a_locked_check_with_nothing_to_keep_still_says_so(window):
     text = _locked(window)
 
-    assert window._headline.text() == "Could not check for system updates"
-    assert "Nothing on your computer has changed" in text
+    assert window._headline.text() == "Could not check for updates"
+    assert "Wait for it and retry" in text
 
 
 def test_any_other_failed_check_still_clears_the_list(window):
@@ -777,7 +786,7 @@ def test_any_other_failed_check_still_clears_the_list(window):
     _apply(window, packages=_some_packages(42))
     _apply(window, error="zypper is not installed")
 
-    assert window._headline.text() == "Could not check for system updates"
+    assert window._headline.text() == "Could not check for updates"
     assert window._status.zypper.count == 0
 
 
@@ -842,7 +851,7 @@ def test_putting_it_off_stores_tomorrow_and_says_so(window):
     _defer(window)
 
     assert SettingsStore().deferred_until() == date.today() + timedelta(days=1)
-    assert window._headline.text() == f"Update check deferred until {_tomorrow()}"
+    assert window._headline.text() == f"Update check put off until {_tomorrow()}"
 
 
 def test_putting_it_off_takes_the_tray_back_to_idle(window):
@@ -853,7 +862,7 @@ def test_putting_it_off_takes_the_tray_back_to_idle(window):
 
     state, tooltip = seen[-1]
     assert state is TrayState.IDLE
-    assert tooltip == f"Update check deferred until {_tomorrow()}"
+    assert tooltip == f"Update check put off until {_tomorrow()}"
 
 
 def test_the_banner_shrinks_to_one_line_once_it_is_put_off(window):
@@ -861,9 +870,8 @@ def test_the_banner_shrinks_to_one_line_once_it_is_put_off(window):
     _defer(window)
 
     text = window._banner_label.text()
-    assert text == (
-        f"VLC could not be reached. This was put off until {_tomorrow()}."
-    )
+    # The date is the headline's job; this says which source it was about.
+    assert text == 'The software source "VLC" could not be reached.'
     # Nothing left to press: "Check now" is the way back.
     assert _banner_button(window) == ""
     assert window._banner_btn_alt.isHidden()
@@ -899,7 +907,7 @@ def test_a_clean_check_lifts_it_by_itself(window):
     _apply(window, packages=_some_packages(42))
 
     assert SettingsStore().deferred_until() is None
-    assert window._headline.text() == "42 update(s) available"
+    assert window._headline.text() == "42 updates available"
 
 
 def test_a_check_that_still_fails_keeps_it(window):
@@ -909,7 +917,7 @@ def test_a_check_that_still_fails_keeps_it(window):
     _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
 
     assert SettingsStore().deferred_until() is not None
-    assert window._headline.text() == f"Update check deferred until {_tomorrow()}"
+    assert window._headline.text() == f"Update check put off until {_tomorrow()}"
 
 
 def test_a_failed_check_is_not_hidden_behind_a_deferral(window):
@@ -925,7 +933,7 @@ def test_a_failed_check_is_not_hidden_behind_a_deferral(window):
         locked=True,
     )
 
-    assert window._headline.text() == "Could not check for system updates"
+    assert window._headline.text() == "Could not check for updates"
     assert "using the package system" in window._banner_label.text()
 
 
@@ -940,15 +948,27 @@ def test_a_failed_check_keeps_its_message_through_the_render(window, monkeypatch
     # No status file, so _on_check_finished() falls through to a plain render.
     monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
 
-    window._on_check_finished(False, "Helper not found - is the package installed correctly?")
+    window._on_check_finished(False, HELPER_MISSING)
 
     assert _banner_showing(window)
-    assert "Update check failed" in window._banner_label.text()
-    assert "Helper not found" in window._banner_label.text()
+    assert "The update check could not finish" in window._banner_label.text()
+    # A plain reason is said in the banner itself.
+    assert HELPER_MISSING in window._banner_label.text()
 
     # Anything else that re-renders must not take it away either.
     window._render()
-    assert "Update check failed" in window._banner_label.text()
+    assert "The update check could not finish" in window._banner_label.text()
+
+
+def test_a_failed_check_in_a_helpers_own_words_keeps_them_out_of_sight(
+    window, monkeypatch
+):
+    monkeypatch.setattr("tumbleweed_updater.mainwindow.read_status", lambda: None)
+
+    window._on_check_finished(False, "Traceback: KeyError 'packages'")
+
+    assert "KeyError" not in window._banner_label.text()
+    assert "KeyError" in window._banner_label.toolTip()
 
 
 def test_a_successful_check_clears_the_last_failure(window, monkeypatch):
@@ -1015,11 +1035,11 @@ def test_a_single_other_update_is_not_plural():
     from tumbleweed_updater.mainwindow import _locked_text, _missing_sources_text
 
     text = _missing_sources_text([("vlc", "VLC")], 1)
-    assert "The other update was checked" in text
+    assert "found the update below" in text
     assert "1 updates" not in text
 
-    text = _locked_text(1, "2 h ago")
-    assert "The update below is the one found" in text
+    text = _locked_text(1, "2 hours ago")
+    assert "The update below was found" in text
     assert "1 updates" not in text
 
 
@@ -1088,7 +1108,7 @@ def test_an_ordinary_run_still_honours_no_confirm(window, monkeypatch):
 def test_a_stuck_check_offers_the_terminal_when_there_is_a_question(window):
     text = _apply(window, needs_decision=True, failed_repos=[("vlc", "VLC")])
 
-    assert "Or press Update now" in text
+    assert "You can also press Update now" in text
     assert window._btn_update.isEnabled()
 
 
@@ -1098,5 +1118,85 @@ def test_a_stuck_check_without_a_question_does_not(window):
         window, error="repository refresh failed", failed_repos=[("vlc", "VLC")]
     )
 
-    assert "Or press Update now" not in text
+    assert "press Update now" not in text
     assert not window._btn_update.isEnabled()
+
+
+# --------------------------------------------------------------------------- #
+# Wording that used to say something the code did not do.
+# --------------------------------------------------------------------------- #
+
+
+def test_times_are_written_out_in_full():
+    from datetime import datetime, timezone
+
+    from tumbleweed_updater.mainwindow import _relative_time
+
+    now = datetime.now(timezone.utc)
+    assert _relative_time((now - timedelta(minutes=5)).isoformat()) == "5 minutes ago"
+    assert _relative_time((now - timedelta(minutes=65)).isoformat()) == "1 hour ago"
+    assert _relative_time((now - timedelta(hours=49)).isoformat()) == "2 days ago"
+
+
+def test_a_failed_check_tells_the_tray_in_plain_words(window):
+    seen = []
+    window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
+
+    _apply(window, error="zypper exited 4")
+
+    assert seen[-1] == (TrayState.ERROR, "Could not check for updates")
+
+
+def test_the_snapshot_plugin_advice_works_as_typed(window):
+    """Without sudo, zypper answers "Root privileges are required"."""
+    text = _apply(window, packages=_some_packages(3), snapshots_ok=False)
+
+    assert "sudo zypper install snapper-zypp-plugin" in text
+
+
+# --------------------------------------------------------------------------- #
+# The progress row under the buttons, shown while an update runs.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_progress_row_is_hidden_until_an_update_runs(window):
+    assert window._run_box.isHidden()
+
+
+def test_an_update_shows_the_row_and_leaves_the_small_bar_to_checks(window):
+    window._set_running(True)
+
+    assert not window._run_box.isHidden()
+    assert window._progress.isHidden()
+    window._set_running(False)
+
+
+def test_the_row_shows_what_the_runner_reports(window):
+    window._set_running(True)
+
+    window._runner.progressChanged.emit(
+        "Updating the system: installing 40 of 360 packages", 553, 1000
+    )
+    assert window._run_text.text() == "Updating the system: installing 40 of 360 packages"
+    assert (window._run_bar.value(), window._run_bar.maximum()) == (553, 1000)
+
+    # No count to show: Qt draws a moving bar for a maximum of 0.
+    window._runner.progressChanged.emit("Updating the system: finishing off", 0, 0)
+    assert window._run_bar.maximum() == 0
+    window._set_running(False)
+
+
+def test_the_row_goes_when_the_run_ends_however_it_ends(window):
+    for ok, message in ((True, "All updates completed."), (False, "The system update did not finish.")):
+        window._set_running(True)
+        window._runner.progressChanged.emit("Updating the system: getting ready", 0, 0)
+
+        window._on_run_finished(ok, message)
+
+        assert window._run_box.isHidden(), ok
+        assert window._run_text.text() == ""
+
+
+def test_the_row_sits_below_the_buttons(window):
+    outer = window.centralWidget().layout()
+    assert outer.itemAt(outer.count() - 1).widget() is window._run_box

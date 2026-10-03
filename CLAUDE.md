@@ -158,6 +158,22 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   scrollback deque. `runner.py` drives a queue of steps (zypper dup → flatpak
   system → flatpak user) through a single `TerminalWidget`, stopping on the
   first non-zero exit.
+* **`progress.py`** (Qt-free) reads zypper's package counters out of the
+  update's terminal output for the progress row under the window's buttons
+  (`MainWindow._run_box`, fed by `UpdateRunner.progressChanged`). Downloads put
+  `(12/345),` at the right of the line (`src/callbacks/repo.h`, `fillsRhs`; it
+  can wrap onto a line of its own), installs and removals start the line with
+  `( 12/345) ` (`rpm.h`, the untranslated `"(%*u/%u) "`). Only the counters
+  are read, never the translated words around them. Downloads and installs
+  count together, an installed package counts as downloaded (one already on
+  disk prints no download line), the bar never goes backwards, and after the
+  last package it turns into a moving bar ("finishing off") while the scripts,
+  the closing snapshot and `zypper clean` run. Only the zypper step is read
+  (`Step.counts_packages`); Flatpak steps get a moving bar and their label, and
+  Cancel freezes it at "Stopping the update". Checks keep the small bar beside
+  "Check now". The formats come from zypper's source for 1.14.101, not from a
+  captured run, and `tests/test_progress.py` says so: the first real update is
+  the test of them.
 * **`app.py`** owns the `QApplication`, single-instance `QLocalServer`, tray,
   window, and `PrivilegedRunner`. `MainWindow.stateChanged` → `TrayIcon`.
 * **`packagekit.py`** (Qt-free) reads `/run/zypp.pid` and waits on it. Measured
@@ -227,7 +243,7 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `apply_zypper_status()` keeps the old result with only the error and the flag
   taken from the new one — `generated` deliberately untouched, so "Last checked"
   keeps pointing at the check that produced the list. `_render()` and
-  `_emit_state()` therefore say "Could not check for system updates" / emit
+  `_emit_state()` therefore say "Could not check for updates" / emit
   `TrayState.ERROR` only when `z.error and not z.count`. Any other failed check
   still clears the window, because then the app genuinely does not know. The
   banner's wording for a lock is `_locked_text()`, not `z.error`: zypper's own
@@ -304,8 +320,8 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `unreachable_since()` remember the day each source first failed (written from
   `apply_zypper_status()`, forgotten the moment a check reaches it again), and
   past `_STALE_SOURCE_DAYS` = 3 the last sentence of `_missing_sources_text()`
-  stops saying "worth trying again tomorrow" and starts saying how long the
-  source has been gone and that it wants replacing or removing in YaST →
+  stops saying "try again tomorrow" and starts saying how long the source has
+  been gone and that it wants a working address, or removing, in YaST →
   Software Repositories. When the check worked nothing out *and* a source was
   unreachable *and* the lock was not the problem (`stuck` in `_render_banner()`),
   `_stuck_sources_text()` replaces the raw error with the same advice — that is
@@ -314,7 +330,7 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   now its only one: the source is usually somebody else's server having a bad
   afternoon and there is nothing useful to do until it is back. It stores
   tomorrow's date in `SettingsStore.set_deferred_until()`, and
-  while that is in force the headline reads "Update check deferred until
+  while that is in force the headline reads "Update check put off until
   dd/mm/yyyy", `_emit_state()` emits `TrayState.IDLE` so the icon stops looking
   like there is something to attend to, `app._should_notify()` stays quiet, and
   the banner shrinks to one line with no buttons. Three things end it: "Check
@@ -422,16 +438,34 @@ timer on install), hicolor SVG icons, a second icon copy under
 file. Dependencies (`python3-pyside6`, `python3-pyte`, `polkit`, …) are declared
 as RPM `Requires:` — they are not auto-detected since nothing ships dist-info.
 
+### Promo video
+
+`promo/` is a 45 s promotional video, not part of the app: a web page
+(`promo/scene/`) whose every frame is a function of time, rendered by
+`node promo/render.mjs` through headless Chromium and ffmpeg (no npm
+packages). `scene/timeline.js` is the one clock both the picture and the
+Web Audio score read. It reads the mark from `data/icons/styles/tumbleweed.svg`
+and mirrors the app's real strings, so check it if those change. Output goes
+to `promo/out/` (gitignored) and `build-rpm.sh` excludes the whole folder from
+the source tarball. See `promo/README.md`.
+
 ## Conventions
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
   `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py`, `packagekit.py`,
-  `autostart.py`, `repos.py` must stay Qt-free (imported by the root helpers,
+  `autostart.py`, `repos.py`, `progress.py` must stay Qt-free (imported by the root helpers,
   or by both the dialog and `app.py`).
 * Anything the user reads about a failure is written for someone who has never
   heard of a repository: no "repository", "metadata", "refresh" or exit codes
   in a banner or a dialog. zypper's own words stay untouched in the terminal
-  underneath, which is the record of what actually happened.
+  underneath, which is the record of what actually happened. Where there is no
+  terminal, the window shows a plain sentence of its own and keeps the other
+  program's words as details: `dialogs.show_failure()` puts them under "Show
+  Details…", and the banner puts them in its tooltip. `privileged.is_plain()`
+  decides which messages are already plain enough to show as they are (the
+  `privileged` constants, `repos.LOCKED_MESSAGE`, `intervals.FAILURES`).
+  Questions go through `dialogs.ask()`, whose buttons are named for what they
+  do rather than Yes and No. The `plain-words` skill checks new wording.
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog

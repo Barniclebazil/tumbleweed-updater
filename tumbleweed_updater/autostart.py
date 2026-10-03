@@ -24,9 +24,21 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import sys
 import time
 
 OWN_ENTRY = "tumbleweed-updater.desktop"
+
+# What the notifier does and why switching it off helps, for the one-time
+# question in app.py and the Settings tooltip, so the two cannot disagree.
+NOTIFIER_EXPLAINED = (
+    "Plasma's update notifier, part of Discover, checks for updates in the "
+    "background. While it checks, nothing else can use the package system, so "
+    "this app's update checks and updates have to wait for it, and sometimes "
+    "fail.\n\n"
+    "Tumbleweed Updater already tells you about the same updates, so the "
+    "notifier is not needed."
+)
 
 # Plasma's update notifier. The binary is a separate program from Discover.
 PLASMA_NOTIFIER_ENTRY = "org.kde.discover.notifier.desktop"
@@ -258,7 +270,11 @@ def suppress_plasma_notifier(hidden: bool) -> tuple[bool, str]:
         set_hidden(PLASMA_NOTIFIER_ENTRY, hidden, name="Discover",
                    exec_=f"{PLASMA_NOTIFIER_EXE} --check-delay 20")
     except OSError as exc:
-        return False, f"Could not change the autostart entry: {exc}"
+        # The reason is for whoever reads the logs; the dialog says what failed.
+        sys.stderr.write(f"tumbleweed-updater: {PLASMA_NOTIFIER_ENTRY}: {exc}\n")
+        return False, (
+            "Could not change whether Plasma's update notifier starts at login."
+        )
     if not hidden:
         return True, "Plasma's update notifier will start again at your next login."
     stopped = stop_notifier()

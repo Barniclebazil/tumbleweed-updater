@@ -89,3 +89,12 @@ def test_the_live_dialog_still_gets_its_result(app):
     assert dialog._tree.topLevelItemCount() == 1
     assert "1 snapshot" in dialog._hint.text()
     dialog.close()
+
+
+def test_snappers_change_codes_are_shown_as_words():
+    from tumbleweed_updater.snapshotsdialog import _change_word
+
+    assert _change_word("+..... ") == "Added"
+    assert _change_word("-.....") == "Removed"
+    assert _change_word("c.....") == "Changed"
+    assert _change_word("....x.") == "Changed"

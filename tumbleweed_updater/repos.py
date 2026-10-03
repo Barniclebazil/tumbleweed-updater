@@ -164,7 +164,7 @@ def failed_aliases(refresh_output: str, known: list[str] | set[str]) -> list[str
 # are written for whoever typed the command, and read as nonsense in a dialog
 # the user did not type anything into, so they are replaced rather than passed
 # on.
-_LOCKED_MESSAGE = (
+LOCKED_MESSAGE = (
     "Something else on this computer was installing or checking for software "
     "at the time. Wait for that to finish, then try again."
 )
@@ -192,7 +192,7 @@ def set_enabled(alias: str, enabled: bool, timeout: int = 30) -> str | None:
     except subprocess.TimeoutExpired:
         return "zypper timed out"
     if proc.returncode == ZYPPER_EXIT_ZYPP_LOCKED:
-        return _LOCKED_MESSAGE
+        return LOCKED_MESSAGE
     if proc.returncode != 0:
         stderr = (proc.stderr or proc.stdout).strip().splitlines()
         return stderr[-1] if stderr else f"zypper exited {proc.returncode}"

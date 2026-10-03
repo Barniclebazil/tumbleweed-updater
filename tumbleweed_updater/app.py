@@ -12,7 +12,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from . import APP_ID, APP_NAME, __version__
-from . import autostart
+from . import autostart, dialogs
 from .icons import window_icon
 from .mainwindow import MainWindow
 from .paths import STATUS_DIR, STATUS_FILE, installed_version
@@ -256,7 +256,7 @@ class Application:
         ):
             self.tray.showMessage(
                 APP_NAME,
-                f"{total} update(s) available for your system.",
+                f"{total} update{'' if total == 1 else 's'} available.",
                 QSystemTrayIcon.Information,
                 8000,
             )
@@ -292,21 +292,17 @@ class Application:
         self.qt.setWindowIcon(window_icon(style))
         self.window.reload_icon()
 
-    def _confirm_abort(self, question: str) -> bool:
-        return (
-            QMessageBox.question(
-                self.window,
-                "Update in progress",
-                question,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            == QMessageBox.Yes
+    def _confirm_abort(self, question: str, yes: str) -> bool:
+        return dialogs.ask(
+            self.window, "Update in progress", question, yes, "Keep running"
         )
 
     def _quit(self) -> None:
         if self.window.runner_active and not self._confirm_abort(
-            "An update is still running. Quit anyway and abort it?"
+            "An update is still running. Quitting now stops it part way "
+            "through, which can leave some packages updated and others not. "
+            "Quit anyway?",
+            "Quit and stop the update",
         ):
             return
         self.qt.quit()
@@ -315,7 +311,10 @@ class Application:
         # Re-executing tears down the terminal's PTY, which SIGHUPs whatever is
         # attached to it - including a zypper transaction in flight.
         if self.window.runner_active and not self._confirm_abort(
-            "An update is still running. Restart anyway and abort it?"
+            "An update is still running. Restarting the app now stops it part "
+            "way through, which can leave some packages updated and others "
+            "not. Restart anyway?",
+            "Restart and stop the update",
         ):
             return
         # Release the single-instance socket before re-executing in place, so
@@ -330,11 +329,11 @@ class Application:
     def _maybe_ask_about_notifier(self) -> None:
         """Offer once to switch off Plasma's update notifier.
 
-        It polls PackageKit, PackageKit takes the zypp lock when it starts, and
-        that is what makes checks and upgrades fail here. This app already
-        reports the same zypper and Flatpak updates, so the notifier is
-        redundant - but it belongs to another application, so it is never
-        switched off without asking.
+        It polls PackageKit, PackageKit holds the zypp lock while it checks,
+        and checks and upgrades here have to wait for it (and give up if it
+        takes too long). This app already reports the same zypper and Flatpak
+        updates, so the notifier is not needed - but it belongs to another
+        application, so it is never switched off without asking.
         """
         prefs = self.settings.load()
         already_off = autostart.is_hidden()
@@ -354,15 +353,10 @@ class Application:
         box.setWindowTitle("Plasma also checks for updates")
         box.setText("Turn off Plasma's own update notifier?")
         box.setInformativeText(
-            "Plasma's update notifier (part of Discover) looks for updates "
-            "through PackageKit. Starting PackageKit takes the system package "
-            "lock, which is what makes an update check fail with \"System "
-            "management is locked\".\n\n"
-            f"{APP_NAME} already tells you about the same zypper and Flatpak "
-            "updates, so the notifier is not needed as well.\n\n"
-            "Discover itself is not affected: you can still open it to install "
-            "and remove software and to manage repositories. You can change "
-            "this again at any time in Settings."
+            f"{autostart.NOTIFIER_EXPLAINED}\n\n"
+            "Discover itself is not affected. You can still use it to install "
+            "and remove software and to manage software sources. You can change "
+            "this at any time in Settings."
         )
         off = box.addButton("Turn it off", QMessageBox.AcceptRole)
         keep = box.addButton("Keep it", QMessageBox.RejectRole)

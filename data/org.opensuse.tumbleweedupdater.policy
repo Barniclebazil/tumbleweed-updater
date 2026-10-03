@@ -11,7 +11,7 @@
        session, since it changes nothing on the system. -->
   <action id="org.opensuse.tumbleweedupdater.check">
     <description>Check for openSUSE Tumbleweed updates</description>
-    <message>Authentication is required to refresh repositories and check for updates</message>
+    <message>Authentication is required to check for updates</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
@@ -39,7 +39,7 @@
        the authorisation may stay cached. -->
   <action id="org.opensuse.tumbleweedupdater.snapshots">
     <description>List and compare Btrfs snapshots</description>
-    <message>Authentication is required to list Btrfs snapshots</message>
+    <message>Authentication is required to list and compare system snapshots</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
@@ -55,7 +55,7 @@
        anything, so each of these prompts. -->
   <action id="org.opensuse.tumbleweedupdater.snapshots-manage">
     <description>Roll back or delete a Btrfs snapshot</description>
-    <message>Authentication is required to roll back or delete a Btrfs snapshot</message>
+    <message>Authentication is required to roll back to or delete a system snapshot</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
@@ -84,7 +84,7 @@
   <!-- The actual upgrade. -->
   <action id="org.opensuse.tumbleweedupdater.update">
     <description>Install openSUSE Tumbleweed updates</description>
-    <message>Authentication is required to install updates to your system packages via zypper dup</message>
+    <message>Authentication is required to install system updates</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>

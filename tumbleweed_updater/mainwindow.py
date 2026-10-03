@@ -24,8 +24,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, dialogs
 from .icons import window_icon
+from .privileged import is_plain
 from .repos import list_repos
 from .runner import UpdateRunner
 from .settings import SettingsStore, dup_args_from_prefs, interactive_dup_args
@@ -88,6 +89,21 @@ _UPDATE_BUTTON_TEXT = "Update now…"
 # panel and the window cannot disagree.
 _WAITING_FOR_A_CHOICE = "Updates are waiting for a choice from you"
 
+# What the window says when a check failed and nothing more specific is known.
+# The reason, in zypper's or a helper's own words, goes in the banner's tooltip
+# rather than its text.
+_CHECK_FAILED = (
+    "The update check could not finish. Nothing on this computer has changed. "
+    "Try Check now again later."
+)
+# The tray tooltip and the headline for the same thing.
+_COULD_NOT_CHECK = "Could not check for updates"
+
+
+def _count(n: int, singular: str, plural: str | None = None) -> str:
+    """A number with the word that goes with it: "1 update", "12 updates"."""
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
+
 _ACTION_LABELS = {
     Action.UPGRADE: "upgrade",
     Action.DOWNGRADE: "downgrade",
@@ -131,48 +147,48 @@ def _missing_sources_text(failed, total: int, since=None) -> str:
     if len(names) == 1:
         opening = (
             "This application could not reach the software source "
-            f'"{names[0]}", so that source was left out when checking for '
-            "updates."
+            f'"{names[0]}", so its updates were not included in this check.'
         )
-        theirs = "that software source"
-        again = "the software source can be reached again"
+        theirs = f'"{names[0]}"'
+        again = "it can be reached again"
     else:
         opening = (
             f"This application could not reach {len(names)} of your software "
-            f"sources ({', '.join(names)}), so those sources were left out "
-            "when checking for updates."
+            f"sources ({', '.join(names)}), so their updates were not included "
+            "in this check."
         )
         theirs = "those software sources"
-        again = "the software sources can be reached again"
+        again = "they can be reached again"
+    # *total* counts the Flatpak updates too, so this says where the list came
+    # from without claiming it all came from the other software sources.
     if total == 1:
-        rest = "The other update was checked as usual."
+        rest = "Everything else was checked as usual and found the update below."
     elif total:
-        rest = f"The other {total} updates were checked as usual."
+        rest = (
+            f"Everything else was checked as usual and found the {total} "
+            "updates below."
+        )
     else:
         rest = "Everything else was checked as usual."
     return (
-        f"{opening} {rest} Programs you have installed from {theirs} keep "
-        f"working, however they will not get updates until {again}. "
-        + _closing(names, since)
+        f"{opening} {rest} Programs installed from {theirs} keep working, but "
+        f"will not get updates until {again}. " + _closing(names, since)
     )
 
 
 def _closing(names: list[str], since) -> str:
     """The last sentence of the notice: wait, or do something about it."""
     if since is None or (date.today() - since).days < _STALE_SOURCE_DAYS:
-        return (
-            "This is usually a temporary problem at the other end, so it is "
-            "worth trying again tomorrow."
-        )
+        return "This is usually temporary, so try again tomorrow."
     one = len(names) == 1
     subject = "It" if one else "They"
     verb = "has" if one else "have"
     pronoun = "it" if one else "them"
+    working = "a working address for it" if one else "working addresses for them"
     return (
-        f"{subject} {verb} not been reachable since {_day(since)}, which is "
-        "longer than a passing problem at the other end. If nothing changes "
-        f"you will want to replace or remove {pronoun} in YaST → Software "
-        "Repositories."
+        f"{subject} {verb} not been reachable since {_day(since)}, so the "
+        f"problem is unlikely to fix itself. Find {working}, or remove "
+        f"{pronoun}, in YaST → Software Repositories."
     )
 
 
@@ -192,28 +208,31 @@ def _stuck_sources_text(failed, since, *, can_choose: bool = False) -> str:
     names = [name for _alias, name in failed]
     one = len(names) == 1
     if one:
-        subject = f'The software source "{names[0]}" can’t'
-        them = "it"
+        subject = f'The software source "{names[0]}" cannot be reached'
+        them, they = "it", "it"
         been = "It has"
+        working = "a working address for it"
     else:
         subject = (
-            f"{len(names)} of your software sources ({', '.join(names)}) can’t"
+            f"{len(names)} of your software sources ({', '.join(names)}) "
+            "cannot be reached"
         )
-        them = "them"
+        them, they = "them", "they"
         been = "They have"
+        working = "working addresses for them"
     aged = f" {been} not been reachable since {_day(since)}." if since else ""
     choose = (
-        " Or press Update now and choose, in the terminal below, what happens "
-        f"to the programs that came from {them}."
+        " You can also press Update now and choose in the terminal what "
+        f"happens to the programs that came from {them}."
         if can_choose
         else ""
     )
     return (
-        f"The list of updates couldn’t be worked out. {subject} be "
-        f"reached, and there are no longer enough details about {them} on this "
-        f"computer to work the rest out without {them}.{aged} Replace or "
-        f"remove {them} in YaST → Software Repositories, or wait for the "
-        f"other end to come back.{choose}"
+        "The list of updates could not be worked out, so nothing has been "
+        f"installed. {subject}, and the details about {them} saved on this "
+        "computer are no longer enough to work out the updates without "
+        f"{them}.{aged} Find {working}, or remove {them}, in YaST → Software "
+        f"Repositories, or wait until {they} can be reached again.{choose}"
     )
 
 
@@ -228,20 +247,22 @@ def _locked_text(count: int, checked: str) -> str:
     terminal still has the real thing when an upgrade is running.
     """
     opening = (
-        "Something else on this computer was using the package system, so the "
-        "update check couldn’t run."
+        "The update check could not run because another program was using the "
+        "package system."
     )
     if count:
+        # Not "and nothing has changed since": the other program may have been
+        # installing something, so the window cannot know that.
         which = (
-            "The update below is the one"
+            "The update below was"
             if count == 1
-            else f"The {count} updates below are the ones"
+            else f"The {count} updates below were"
         )
-        return (
-            f"{opening} {which} found by the last check, {checked}, and "
-            "nothing has changed since."
-        )
-    return f"{opening} Nothing on your computer has changed."
+        return f"{opening} {which} found by the last check, {checked}."
+    return (
+        f"{opening} Press Wait for it and retry to check again when it has "
+        "finished."
+    )
 
 
 def _day(day) -> str:
@@ -249,20 +270,20 @@ def _day(day) -> str:
     return day.strftime("%d/%m/%Y")
 
 
-def _deferred_sources_text(failed: list[tuple[str, str]], day) -> str:
-    """The banner while the check is deferred: one line, no buttons.
+def _deferred_sources_text(failed: list[tuple[str, str]]) -> str:
+    """The banner while the check is put off: one line, no buttons.
 
     The full explanation is the right thing to read once and the wrong thing to
-    keep reading after deciding to ignore it. The headline carries the date as
-    well; this says which source it was about.
+    keep reading after deciding to ignore it. The headline carries the date;
+    this says which source it was about.
     """
     names = [name for _alias, name in failed]
     subject = (
-        names[0]
+        f'The software source "{names[0]}"'
         if len(names) == 1
         else f"{len(names)} of your software sources ({', '.join(names)})"
     )
-    return f"{subject} could not be reached. This was put off until {_day(day)}."
+    return f"{subject} could not be reached."
 
 
 def _relative_time(iso: str) -> str:
@@ -279,10 +300,10 @@ def _relative_time(iso: str) -> str:
     if secs < 90:
         return "just now"
     if secs < 3600:
-        return f"{secs // 60} min ago"
+        return f"{_count(secs // 60, 'minute')} ago"
     if secs < 86400:
-        return f"{secs // 3600} h ago"
-    return f"{secs // 86400} d ago"
+        return f"{_count(secs // 3600, 'hour')} ago"
+    return f"{_count(secs // 86400, 'day')} ago"
 
 
 class MainWindow(QMainWindow):
@@ -307,6 +328,9 @@ class MainWindow(QMainWindow):
         # a message shown once and not kept here is wiped by the next render -
         # which, for a failed check, is the very next line.
         self._check_failure: str | None = None
+        # The helper's own words for that failure, when they are not plain:
+        # kept for the banner's tooltip rather than shown in its text.
+        self._check_failure_detail = ""
         self._run_failure: str | None = None
 
         self.setWindowTitle(APP_NAME)
@@ -322,7 +346,9 @@ class MainWindow(QMainWindow):
         self._lock_waiter.finished.connect(self._on_lock_wait_done)
 
         self._runner = UpdateRunner(self._terminal, self)
-        self._runner.stepStarted.connect(lambda label: self._statusbar(label))
+        # The row under the buttons names each step and how far it has got,
+        # so the step names no longer go to the status bar as well.
+        self._runner.progressChanged.connect(self._on_run_progress)
         self._runner.finished.connect(self._on_run_finished)
         self._terminal.clearRequested.connect(self._reset_log_view)
 
@@ -341,7 +367,9 @@ class MainWindow(QMainWindow):
         self._headline = QLabel()
         self._headline.setStyleSheet("font-size: 15pt; font-weight: 600;")
         self._subline = QLabel()
-        self._subline.setStyleSheet("color: palette(mid);")
+        # The theme's own colour for secondary text. palette(mid) was darker
+        # than the window background on a dark theme, which made this unreadable.
+        self._subline.setStyleSheet("color: palette(placeholder-text);")
         outer.addWidget(self._headline)
         outer.addWidget(self._subline)
 
@@ -355,7 +383,7 @@ class MainWindow(QMainWindow):
         self._update_label = QLabel()
         self._update_label.setWordWrap(True)
         notice_l.addWidget(self._update_label, 1)
-        restart_btn = QPushButton("Restart App")
+        restart_btn = QPushButton("Restart now")
         restart_btn.clicked.connect(self.restartRequested.emit)
         notice_l.addWidget(restart_btn)
         self._update_notice.hide()
@@ -407,7 +435,7 @@ class MainWindow(QMainWindow):
         top_l = QVBoxLayout(top)
         top_l.setContentsMargins(0, 0, 0, 0)
 
-        self._chk_system = QCheckBox("System upgrade — zypper dup")
+        self._chk_system = QCheckBox("System updates")
         self._chk_flatpak = QCheckBox("Flatpak updates")
         for chk in (self._chk_system, self._chk_flatpak):
             chk.setChecked(True)
@@ -415,7 +443,9 @@ class MainWindow(QMainWindow):
             top_l.addWidget(chk)
 
         self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["Package", "Change", "Arch"])
+        # "Details", not "Arch": a package row shows its architecture there, but
+        # a Flatpak row shows where it is installed and where it comes from.
+        self._tree.setHeaderLabels(["Package", "Change", "Details"])
         self._tree.setRootIsDecorated(True)
         self._tree.setSelectionMode(QAbstractItemView.NoSelection)
         self._tree.setAlternatingRowColors(True)
@@ -431,7 +461,9 @@ class MainWindow(QMainWindow):
         self._terminal_box = QWidget()
         tb_l = QVBoxLayout(self._terminal_box)
         tb_l.setContentsMargins(0, 0, 0, 0)
-        tb_l.addWidget(QLabel("Terminal — answer zypper's prompts here:"))
+        tb_l.addWidget(
+            QLabel("Terminal (if the update asks a question, type your answer here):")
+        )
         self._terminal = TerminalWidget(
             font_family=p.term_font_family,
             font_size=p.term_font_size,
@@ -447,10 +479,8 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         self._btn_check = QPushButton("Check now")
         self._btn_check.clicked.connect(self._on_check_clicked)
-        self._btn_hide_log = QPushButton("Hide log")
-        self._btn_hide_log.setToolTip(
-            "Clear the terminal and collapse it out of the way."
-        )
+        self._btn_hide_log = QPushButton("Clear log")
+        self._btn_hide_log.setToolTip("Clear the update log and hide the terminal.")
         self._btn_hide_log.clicked.connect(self._reset_log_view)
         self._btn_hide_log.hide()
         self._progress = QProgressBar()
@@ -470,6 +500,24 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self._btn_cancel)
         buttons.addWidget(self._btn_update)
         outer.addLayout(buttons)
+
+        # How far an update has got: a line of text above a full-width bar,
+        # shown only while an update runs. Checks keep the small bar beside
+        # "Check now". The status bar is outside the central widget, so this
+        # row sits directly above it.
+        self._run_box = QWidget()
+        run_l = QVBoxLayout(self._run_box)
+        run_l.setContentsMargins(0, 0, 0, 0)
+        run_l.setSpacing(4)
+        self._run_text = QLabel()
+        self._run_text.setWordWrap(True)
+        self._run_bar = QProgressBar()
+        self._run_bar.setRange(0, 0)
+        self._run_bar.setFormat("%p%")
+        run_l.addWidget(self._run_text)
+        run_l.addWidget(self._run_bar)
+        self._run_box.hide()
+        outer.addWidget(self._run_box)
 
         self.setCentralWidget(central)
 
@@ -599,11 +647,20 @@ class MainWindow(QMainWindow):
         if self._privileged.check_running or self._runner.is_running:
             return
         self._banner_btn.setEnabled(False)
-        self._statusbar("Waiting for the package system to come free…")
+        self._statusbar(
+            "Waiting for another program to finish using the package system…"
+        )
         self._lock_waiter.start()
 
-    def _on_lock_wait_done(self, free: bool, detail: str) -> None:
-        self._statusbar(detail)
+    def _on_lock_wait_done(self, free: bool, _detail: str) -> None:
+        # *_detail* names the holder and its pid, which is for the terminal and
+        # the logs; the status bar says what it means.
+        self._statusbar(
+            "The other program has finished. Checking for updates…"
+            if free
+            else "The other program is still using the package system. "
+            "Checking for updates anyway…"
+        )
         # Re-check either way. helper/check waits again as root anyway, so a
         # timeout here costs nothing, and the fresh status decides whether the
         # button comes back.
@@ -613,7 +670,17 @@ class MainWindow(QMainWindow):
         self._set_busy(False, "")
         # Kept rather than shown: the render below rebuilds the banner from the
         # status file, and a banner set here directly never survived it.
-        self._check_failure = None if ok else f"Update check failed: {message}"
+        if ok:
+            self._check_failure = None
+            self._check_failure_detail = ""
+        elif is_plain(message):
+            # The helper never ran, for a reason written for the user (a
+            # cancelled password prompt, say), so say which.
+            self._check_failure = f"The update check could not finish. {message}"
+            self._check_failure_detail = ""
+        else:
+            self._check_failure = _CHECK_FAILED
+            self._check_failure_detail = message
         if ok:
             self._statusbar("Update check complete.")
         # Re-read the status file directly rather than relying on the app's
@@ -694,51 +761,55 @@ class MainWindow(QMainWindow):
         if ask:
             dup_args = interactive_dup_args(dup_args)
 
-        lines = ["The following will run in the terminal below:"]
+        steps_run = []
         if do_zypper:
-            note = (
-                "zypper dup (a Btrfs snapshot is created automatically)"
+            steps_run.append(
+                "System update (a snapshot is taken first, so you can roll back)"
                 if self._status.snapshots_ok
-                else "zypper dup — WARNING: snapper-zypp-plugin is missing, "
-                "no snapshot will be taken"
+                else "System update. No snapshot will be taken first, because "
+                "snapper-zypp-plugin is not installed."
             )
-            lines.append(f"  • {note}")
         if do_fp_sys:
-            lines.append("  • flatpak update (system)")
+            steps_run.append("Flatpak update for all users")
         if do_fp_user:
-            lines.append("  • flatpak --user update")
+            steps_run.append("Flatpak update for your own apps")
+        lines = ["The following will run in the terminal below:"]
+        lines += [f"  {i}. {text}" for i, text in enumerate(steps_run, 1)]
 
         if do_zypper:
             notes = []
             if prefs.dup_allow_vendor_change:
-                notes.append("allow packages to change vendor/repository")
+                notes.append(
+                    "Packages may switch to a different supplier (vendor change)"
+                )
             if prefs.dup_non_interactive and not ask:
                 notes.append(
-                    "skip confirmation prompts — a clash between packages "
-                    "stops the update instead of asking"
+                    "Install without asking to confirm. If packages clash, the "
+                    "update stops instead of asking."
                 )
             if prefs.dup_download_in_advance:
-                notes.append("download everything before installing")
+                notes.append("Download everything before installing")
             if prefs.cleanup_after_update:
-                notes.append("clear the package cache afterwards")
+                notes.append("Delete the downloaded package files afterwards")
             if notes:
                 lines.append("")
                 lines.append("Options in effect:")
-                lines += [f"  • {n}" for n in notes]
+                lines += [f"  {i}. {n}" for i, n in enumerate(notes, 1)]
             # Spell the command out: the free-text options field is stored in
             # the user's config, so this is the only place the exact argument
             # list that will run as root is visible.
             if ask:
                 lines.append("")
                 lines.append(
-                    "This update needs a choice from you. zypper will describe "
-                    "the clash and list numbered ways to settle it: type a "
+                    "This update needs a choice from you. zypper will explain "
+                    "the problem and list numbered ways to settle it. Type a "
                     "number and press Enter."
                 )
                 if prefs.dup_non_interactive:
                     lines.append(
-                        "It will ask for confirmation this time, even though "
-                        "Settings says not to, because the choice is yours."
+                        '"Install without asking me to confirm" is overridden '
+                        "for this update, so zypper will also ask before it "
+                        "installs anything."
                     )
             lines.append("")
             lines.append("  $ zypper dup " + " ".join(dup_args))
@@ -761,10 +832,17 @@ class MainWindow(QMainWindow):
         self._runner.start(steps)
         self._terminal.setFocus()
 
+    def _on_run_progress(self, text: str, value: int, maximum: int) -> None:
+        self._run_text.setText(text)
+        # A maximum of 0 makes Qt draw a moving bar with no percentage.
+        self._run_bar.setRange(0, maximum)
+        if maximum:
+            self._run_bar.setValue(value)
+
     def _runner_cancel(self) -> None:
-        if self._runner.cancel():
-            self._statusbar("Stopping after the current step…")
-        else:
+        # Cancel sends Ctrl-C to the step that is running now and drops the
+        # rest (UpdateRunner.cancel). The progress row then says it is stopping.
+        if not self._runner.cancel():
             self._statusbar("Nothing to cancel.")
 
     def _on_run_finished(self, ok: bool, message: str) -> None:
@@ -790,25 +868,13 @@ class MainWindow(QMainWindow):
         self._on_check_clicked()
 
     def _handle_reboot_needed(self) -> None:
-        body = (
-            "The update installed components that need a reboot to take effect "
-            "(kernel, glibc, systemd, …)."
-        )
+        body = "Some of the updates take effect only after the computer restarts."
         if self._settings.load().reboot_action == "offer":
-            if (
-                QMessageBox.question(
-                    self,
-                    "Reboot now?",
-                    body + "\n\nReboot now?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                == QMessageBox.Yes
-            ):
+            if dialogs.ask(self, "Restart now?", body, "Restart now", "Later"):
                 # logind allows an active local session to reboot without pkexec.
                 QProcess.startDetached("systemctl", ["reboot"])
         else:
-            QMessageBox.information(self, "Reboot recommended", body)
+            QMessageBox.information(self, "Restart recommended", body)
 
     # -- rendering ----------------------------------------------------------- #
 
@@ -824,7 +890,7 @@ class MainWindow(QMainWindow):
         self._tree.clear()
         if z.count:
             self._add_group(
-                f"System upgrade — {z.count} package(s)",
+                f"System updates: {_count(z.count, 'package')}",
                 [
                     (p.name, f"{_ACTION_LABELS.get(p.action, '')} · {p.summary_line}"
                      if p.summary_line else _ACTION_LABELS.get(p.action, ""), p.arch)
@@ -835,10 +901,10 @@ class MainWindow(QMainWindow):
             # Nothing to list, since the solver stopped before listing it, but
             # an empty table under a "System upgrade" tickbox reads as nothing
             # to do.
-            self._add_group("System upgrade — waiting for your choice", [])
+            self._add_group("System updates: waiting for your choice", [])
         if fp_count:
             self._add_group(
-                f"Flatpak — {f.count} app(s)",
+                f"Flatpak apps: {_count(f.count, 'update')}",
                 [
                     (r.ref_id, f"→ {r.version}" if r.version else "update",
                      f"{r.installation} · {r.origin}")
@@ -871,24 +937,26 @@ class MainWindow(QMainWindow):
             # so it still wins the headline - but only when it left the window
             # with nothing. A check that lost the lock over a list we already
             # had keeps that list, and its count, and says so in the banner.
-            self._headline.setText("Could not check for system updates")
+            self._headline.setText(_COULD_NOT_CHECK)
         elif z.needs_decision and not z.count:
             # Not deferrable and not "up to date": the updates are there, and
             # waiting on the user rather than on anyone's server.
             self._headline.setText(_WAITING_FOR_A_CHOICE)
         elif deferred is not None:
-            self._headline.setText(f"Update check deferred until {_day(deferred)}")
+            self._headline.setText(f"Update check put off until {_day(deferred)}")
         elif total == 0:
             self._headline.setText("Your system is up to date")
         else:
-            self._headline.setText(f"{total} update(s) available")
+            self._headline.setText(f"{_count(total, 'update')} available")
         self._render_banner(z, total, deferred)
 
         bits = [f"Last checked {checked}"]
         if z.count and z.download_size:
-            bits.append(f"download {human_bytes(z.download_size)}")
-        if z.count and z.space_diff:
-            bits.append(f"disk {human_bytes(z.space_diff)}")
+            bits.append(f"{human_bytes(z.download_size)} to download")
+        if z.count and z.space_diff > 0:
+            bits.append(f"uses {human_bytes(z.space_diff)} more disk space")
+        elif z.count and z.space_diff < 0:
+            bits.append(f"frees {human_bytes(-z.space_diff)} of disk space")
         self._subline.setText(" · ".join(bits))
 
         self._update_buttons()
@@ -911,7 +979,9 @@ class MainWindow(QMainWindow):
         if self._runner.is_running or self._privileged.check_running:
             return
         if z.error and not z.count:
-            self.stateChanged.emit(TrayState.ERROR, z.error)
+            # z.error is zypper's or the helper's own wording; the window's
+            # banner keeps it in a tooltip, and the panel says what it means.
+            self.stateChanged.emit(TrayState.ERROR, _COULD_NOT_CHECK)
         elif z.needs_decision and not z.count:
             # UPDATES, not ERROR: there are updates, and this is also the state
             # that lets the tray menu's "Update now…" start the run that asks.
@@ -920,11 +990,11 @@ class MainWindow(QMainWindow):
             # The whole point of putting it off: the icon stops looking like
             # there is something to attend to.
             self.stateChanged.emit(
-                TrayState.IDLE, f"Update check deferred until {_day(deferred)}"
+                TrayState.IDLE, f"Update check put off until {_day(deferred)}"
             )
         elif total > 0:
             self.stateChanged.emit(
-                TrayState.UPDATES, f"{total} update(s) available"
+                TrayState.UPDATES, f"{_count(total, 'update')} available"
             )
         else:
             self.stateChanged.emit(TrayState.IDLE, "Up to date")
@@ -979,7 +1049,11 @@ class MainWindow(QMainWindow):
         self._chk_flatpak.setEnabled(
             not running and self._status.flatpak.count > 0
         )
-        self._progress.setVisible(running)
+        self._run_box.setVisible(running)
+        if not running:
+            # Ready for the next run: no count left over from this one.
+            self._run_text.clear()
+            self._run_bar.setRange(0, 0)
         self._update_banner_button()
         self._update_log_controls()
 
@@ -1025,8 +1099,12 @@ class MainWindow(QMainWindow):
         alt_button: str = "",
         alt_on_click=None,
         tone: str = "warning",
+        details: str = "",
     ) -> None:
         self._banner_label.setText(text)
+        self._banner_label.setToolTip(
+            f"Technical details:\n{details}" if details else ""
+        )
         if tone not in _BANNER_STYLES:
             tone = "warning"
         self._banner.setStyleSheet(_BANNER_STYLES[tone])
@@ -1041,6 +1119,7 @@ class MainWindow(QMainWindow):
         self._update_banner_button()
 
     def _hide_banner(self) -> None:
+        self._banner_label.setToolTip("")
         self._banner_action = None
         self._banner_alt_action = None
         self._banner.hide()
@@ -1081,6 +1160,9 @@ class MainWindow(QMainWindow):
         deferral.
         """
         parts: list[str] = []
+        # Other programs' own words for what went wrong. They are kept for the
+        # tooltip so the banner's text can stay plain.
+        details: list[str] = []
         problem = False
         # Our own jobs failing come first: they are what just happened, and
         # nothing in the status file describes them.
@@ -1088,6 +1170,8 @@ class MainWindow(QMainWindow):
             if failure:
                 parts.append(failure)
                 problem = True
+        if self._check_failure and self._check_failure_detail:
+            details.append(self._check_failure_detail)
         button = ""
         on_click = None
         alt_button = ""
@@ -1131,7 +1215,8 @@ class MainWindow(QMainWindow):
                     _locked_text(z.count, _relative_time(self._status.generated))
                 )
             else:
-                parts.append(z.error)
+                parts.append(_CHECK_FAILED)
+                details.append(z.error)
             problem = True
             # A lock is the one check failure the user can do something about
             # from here, so it is the one that gets a button.
@@ -1144,7 +1229,7 @@ class MainWindow(QMainWindow):
             # one line stays. Nothing else in this method is suppressed: a
             # failed check, a held lock and a missing snapshot plugin are real
             # problems and are not what the user put off.
-            parts.append(_deferred_sources_text(z.failed_repos, deferred))
+            parts.append(_deferred_sources_text(z.failed_repos))
         elif z.failed_repos and not stuck:
             # Deliberately does not set `problem`. A source that cannot be
             # reached is not something wrong with this computer: the update
@@ -1173,9 +1258,10 @@ class MainWindow(QMainWindow):
 
         if not z.error and total and not self._status.snapshots_ok and z.count:
             parts.append(
-                "snapper-zypp-plugin is not installed — running the upgrade "
-                "will NOT create a Btrfs snapshot. Install it with: "
-                "zypper install snapper-zypp-plugin"
+                "Updates will not take a snapshot first, so you will not be "
+                "able to roll back if an update goes wrong. To fix this, install "
+                "the snapper-zypp-plugin package, for example with: "
+                "sudo zypper install snapper-zypp-plugin"
             )
             problem = True
 
@@ -1184,6 +1270,7 @@ class MainWindow(QMainWindow):
             return
         self._show_banner(
             "\n\n".join(parts),
+            details="\n".join(details),
             button=button,
             on_click=on_click,
             alt_button=alt_button,
@@ -1293,10 +1380,11 @@ class MainWindow(QMainWindow):
             if not ok:
                 self._update_banner_button()
                 self._statusbar(f"Could not change {name}.")
-                QMessageBox.warning(
+                dialogs.show_failure(
                     self,
                     f"Could not change {name}",
-                    f"{name} was left as it was.\n\n{message}",
+                    f"{name} was left as it was.",
+                    message,
                 )
                 return
             remembered = set(self._settings.disabled_sources())
@@ -1347,7 +1435,8 @@ class MainWindow(QMainWindow):
             self,
             f"About {APP_NAME}",
             f"<b>{APP_NAME}</b><br>Version {__version__}"
-            "<br><br>A tray-based update manager for openSUSE Tumbleweed on KDE."
+            "<br><br>Checks for and installs openSUSE Tumbleweed and Flatpak "
+            "updates from the system tray."
             '<br><br><a href="https://github.com/Barniclebazil/tumbleweed-updater">'
             "github.com/Barniclebazil/tumbleweed-updater</a>",
         )
@@ -1356,16 +1445,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._runner.is_running:
-            if (
-                QMessageBox.question(
-                    self,
-                    "Update in progress",
-                    "An update is still running. Hide the window and keep it "
-                    "running in the background?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-                != QMessageBox.Yes
+            if not dialogs.ask(
+                self,
+                "Update in progress",
+                "An update is still running. Hide the window and keep it "
+                "running in the background?",
+                "Hide window",
+                "Keep window open",
+                default_yes=True,
             ):
                 event.ignore()
                 return

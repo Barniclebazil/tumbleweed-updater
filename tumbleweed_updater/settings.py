@@ -36,7 +36,7 @@ __all__ = [
 # What to do when an upgrade reports that a reboot is needed.
 REBOOT_ACTIONS = {
     "notify": "Just tell me",
-    "offer": "Offer to reboot now",
+    "offer": "Offer to restart now",
 }
 DEFAULT_REBOOT_ACTION = "notify"
 
@@ -46,9 +46,9 @@ DEFAULT_REBOOT_ACTION = "notify"
 # the process. A failed run keeps its log whatever this says: the transcript
 # is the only record of why it failed.
 RESET_AFTER_UPDATE = {
-    "on_close": "When I close it to the tray",
+    "on_close": "When I close the window",
     "on_finish": "As soon as the update finishes",
-    "never": "Never — keep the log until I clear it",
+    "never": "Never (I will clear it myself)",
 }
 DEFAULT_RESET_AFTER_UPDATE = "on_close"
 

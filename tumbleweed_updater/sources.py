@@ -151,10 +151,10 @@ class UpdateStatus:
 # into the terminal as soon as the update starts. That terminal is the way out,
 # exactly as it would be for someone running "sudo zypper dup" themselves.
 NEEDS_A_DECISION = (
-    "Some updates can’t go ahead as they are, because they clash with "
-    "something already on this computer. Press Update now: the terminal below "
-    "will describe the clash and list the ways to settle it. Type the number "
-    "of the one you want and press Enter."
+    "Some updates need a decision from you before they can be installed. "
+    "Press Update now. The terminal below will explain the problem and list "
+    "numbered ways to settle it. Type the number of the one you want and press "
+    "Enter."
 )
 
 

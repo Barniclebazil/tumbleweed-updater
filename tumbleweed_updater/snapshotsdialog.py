@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTreeWidget,
@@ -21,7 +20,25 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-_TYPE_LABELS = {"single": "Single", "pre": "Pre", "post": "Post"}
+from . import dialogs
+from .privileged import is_plain
+
+_TYPE_LABELS = {"single": "Single", "pre": "Before", "post": "After"}
+
+
+def _change_word(code: str) -> str:
+    """snapper's status code ("+....", "-....", "c....") in a word.
+
+    The first character says what happened to the file: "+" created, "-"
+    deleted, anything else ("c" content, "t" type, or "." with only the
+    permissions, owner or attributes changed) is a change.
+    """
+    first = code[:1]
+    if first == "+":
+        return "Added"
+    if first == "-":
+        return "Removed"
+    return "Changed"
 
 
 class SnapshotsDialog(QDialog):
@@ -37,13 +54,15 @@ class SnapshotsDialog(QDialog):
         self._privileged = privileged
         self._busy = False
         self._pending_action: str | None = None
+        # The snapshot a rollback or delete is about, for its failure message.
+        self._pending_number = ""
         self._status_pair: tuple[int, int] | None = None
         self._snapshots: list[dict] = []
 
         layout = QVBoxLayout(self)
 
         self._hint = QLabel("Loading snapshots…")
-        self._hint.setStyleSheet("color: palette(mid);")
+        self._hint.setStyleSheet("color: palette(placeholder-text);")
         layout.addWidget(self._hint)
 
         self._tree = QTreeWidget()
@@ -59,7 +78,7 @@ class SnapshotsDialog(QDialog):
         self._btn_refresh.clicked.connect(self._load)
         self._btn_status = QPushButton("Show changes…")
         self._btn_status.clicked.connect(self._on_status)
-        self._btn_rollback = QPushButton("Set as default on next boot…")
+        self._btn_rollback = QPushButton("Roll back to this snapshot…")
         self._btn_rollback.clicked.connect(self._on_rollback)
         self._btn_delete = QPushButton("Delete…")
         self._btn_delete.clicked.connect(self._on_delete)
@@ -95,6 +114,7 @@ class SnapshotsDialog(QDialog):
         if self._busy:
             return
         self._pending_action = args[0]
+        self._pending_number = args[1] if len(args) > 1 else ""
         self._hint.setText("Working…")
         self._set_controls_enabled(False)
         if not self._privileged.run_snapshots(args):
@@ -129,9 +149,21 @@ class SnapshotsDialog(QDialog):
 
     # -- list ------------------------------------------------------------ #
 
+    def _could_not_list(self, message: str) -> None:
+        # A plain reason (a cancelled password prompt) is said; snapper's or a
+        # helper's own words go in the tooltip instead.
+        if message and is_plain(message):
+            self._hint.setText(f"Could not list snapshots. {message}")
+            self._hint.setToolTip("")
+        else:
+            self._hint.setText("Could not list snapshots.")
+            self._hint.setToolTip(
+                f"Technical details:\n{message}" if message else ""
+            )
+
     def _apply_list(self, ok: bool, message: str, stdout: str) -> None:
         if not ok:
-            self._hint.setText(f"Could not list snapshots: {message}")
+            self._could_not_list(message)
             return
         try:
             data = json.loads(stdout) if stdout else {}
@@ -139,8 +171,9 @@ class SnapshotsDialog(QDialog):
             data = {}
         error = data.get("error")
         if error:
-            self._hint.setText(f"Could not list snapshots: {error}")
+            self._could_not_list(error)
             return
+        self._hint.setToolTip("")
 
         self._snapshots = data.get("snapshots", [])
         self._tree.clear()
@@ -159,7 +192,11 @@ class SnapshotsDialog(QDialog):
             self._tree.resizeColumnToContents(i)
 
         count = len(self._snapshots)
-        self._hint.setText(f"{count} snapshot(s)." if count else "No snapshots found.")
+        self._hint.setText(
+            f"{count} snapshot{'' if count == 1 else 's'}."
+            if count
+            else "No snapshots found."
+        )
 
     def _selected(self) -> dict | None:
         items = self._tree.selectedItems()
@@ -200,7 +237,12 @@ class SnapshotsDialog(QDialog):
 
     def _show_status(self, ok: bool, message: str, stdout: str) -> None:
         if not ok:
-            QMessageBox.warning(self, "Could not compare snapshots", message)
+            dialogs.show_failure(
+                self,
+                "Could not compare snapshots",
+                "Could not compare the snapshots.",
+                message,
+            )
             return
         try:
             data = json.loads(stdout) if stdout else {}
@@ -208,11 +250,19 @@ class SnapshotsDialog(QDialog):
             data = {}
         error = data.get("error")
         if error:
-            QMessageBox.warning(self, "Could not compare snapshots", error)
+            dialogs.show_failure(
+                self,
+                "Could not compare snapshots",
+                "Could not compare the snapshots.",
+                error,
+            )
             return
 
         changes = data.get("changes", [])
-        text = "\n".join(f"{c['status']}\t{c['path']}" for c in changes) or "No file changes."
+        text = (
+            "\n".join(f"{_change_word(c['status'])}\t{c['path']}" for c in changes)
+            or "No file changes."
+        )
         pre, post = self._status_pair
 
         dlg = QDialog(self)
@@ -235,17 +285,17 @@ class SnapshotsDialog(QDialog):
         s = self._selected()
         if s is None:
             return
-        if (
-            QMessageBox.question(
-                self,
-                "Set as default on next boot?",
-                f"Snapshot {s['number']} will become the default subvolume the "
-                "next time this system boots. This does not change the "
-                "running system — reboot to apply it.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            != QMessageBox.Yes
+        # snapper rollback saves the running system as a snapshot of its own
+        # before it switches, and the switch happens at the next boot.
+        if not dialogs.ask(
+            self,
+            f"Roll back to snapshot {s['number']}?",
+            f"After the next restart, the computer will start from a copy of "
+            f"snapshot {s['number']}. The current system is saved as a snapshot "
+            "first, so you can come back to it. Nothing changes until you "
+            "restart.",
+            "Roll back",
+            "Cancel",
         ):
             return
         self._run(["rollback", str(s["number"])])
@@ -254,24 +304,23 @@ class SnapshotsDialog(QDialog):
         s = self._selected()
         if s is None:
             return
-        if (
-            QMessageBox.question(
-                self,
-                "Delete snapshot?",
-                f"Snapshot {s['number']} ({s['description'] or 'no description'}) "
-                "will be permanently deleted.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            != QMessageBox.Yes
+        if not dialogs.ask(
+            self,
+            "Delete snapshot?",
+            f"Snapshot {s['number']} ({s['description'] or 'no description'}) "
+            "will be permanently deleted.",
+            "Delete",
+            "Cancel",
         ):
             return
         self._run(["delete", str(s["number"])])
 
     def _after_mutation(self, action: str, ok: bool, message: str) -> None:
         if not ok:
-            verb = "roll back" if action == "rollback" else "delete"
-            QMessageBox.warning(
-                self, "Snapshot action failed", f"Could not {verb} the snapshot:\n{message}"
-            )
+            number = self._pending_number
+            if action == "rollback":
+                title, lead = "Could not roll back", f"Could not roll back to snapshot {number}."
+            else:
+                title, lead = "Could not delete", f"Could not delete snapshot {number}."
+            dialogs.show_failure(self, title, lead, message)
         self._load()

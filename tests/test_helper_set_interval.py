@@ -56,7 +56,7 @@ def test_a_failing_systemctl_is_reported(monkeypatch, env, capsys, verb):
     assert _main(monkeypatch, "daily") == 1
     err = capsys.readouterr().err
     # The dialog shows this line as it is, so it follows the house rule.
-    assert err.startswith("The system would not")
+    assert err.startswith("The system did not")
     assert "exit" not in err and "systemctl" not in err
 
 

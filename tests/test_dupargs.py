@@ -120,7 +120,7 @@ def test_an_unreachable_source_makes_the_dup_skip_its_own_refresh(
     assert ran[1] == ["zypper", "--no-refresh", "dup", "-y"]
     out = capsys.readouterr().out
     assert "VLC" in out
-    assert "details already on this computer" in out
+    assert "details already saved on this computer" in out
 
 
 def test_a_refresh_that_worked_leaves_the_dup_to_refresh_for_itself(

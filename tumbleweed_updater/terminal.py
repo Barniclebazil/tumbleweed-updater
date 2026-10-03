@@ -28,8 +28,9 @@ from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QApplication,
     QMenu,
-    QMessageBox,
 )
+
+from . import dialogs
 
 _HEX = re.compile(r"^[0-9a-fA-F]{6}$")
 
@@ -363,7 +364,7 @@ class TerminalWidget(QAbstractScrollArea):
         menu = QMenu(self)
         act_copy = menu.addAction("Copy")
         act_copy.setEnabled(self._normalized_selection() is not None)
-        act_all = menu.addAction("Copy Everything")
+        act_all = menu.addAction("Copy all")
         act_paste = menu.addAction("Paste")
         menu.addSeparator()
         act_clear = menu.addAction("Clear")
@@ -416,17 +417,14 @@ class TerminalWidget(QAbstractScrollArea):
         # submitted on the spot. This is the usual terminal-emulator guard.
         if "\n" in text:
             lines = text.count("\n") + 1
-            if (
-                QMessageBox.question(
-                    self,
-                    "Paste multiple lines?",
-                    f"The clipboard holds {lines} lines. Pasting them will "
-                    "answer any prompt the running command is showing.\n\n"
-                    "Paste anyway?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                != QMessageBox.Yes
+            if not dialogs.ask(
+                self,
+                "Paste multiple lines?",
+                f"The clipboard holds {lines} lines. Pasting them will "
+                "answer any prompt the running command is showing.\n\n"
+                "Paste anyway?",
+                "Paste",
+                "Cancel",
             ):
                 return
         self._session.write(text.encode("utf-8"))

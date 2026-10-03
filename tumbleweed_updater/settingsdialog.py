@@ -22,10 +22,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from . import autostart
+from . import autostart, dialogs
 from .dupargs import FLAGS, VALUED, unknown_args
 from .icons import idle_icon, text_color
-from .intervals import INTERVALS
+from .intervals import INTERVALS, LABELS
 from .settings import (
     DEFAULT_TERM_BG,
     DEFAULT_TERM_FG,
@@ -90,17 +90,20 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
 
         self._interval = QComboBox()
-        for label in INTERVALS:
-            self._interval.addItem(label)
-        self._interval.setCurrentText(self._prefs.check_interval)
+        # The wording is LABELS; the key is what is stored and what
+        # helper/set-interval accepts, so it travels as the item's data.
+        for key in INTERVALS:
+            self._interval.addItem(LABELS.get(key, key), key)
+        idx = self._interval.findData(self._prefs.check_interval)
+        self._interval.setCurrentIndex(idx if idx >= 0 else 0)
         form.addRow("Check for updates:", self._interval)
 
         hint = QLabel(
-            "The check runs as a system service (systemd timer) so it works "
-            "even when this window is closed. Changing it needs admin rights."
+            "The scheduled check runs even when this app is not running. "
+            "Changing how often it runs asks for an administrator password."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        hint.setStyleSheet("color: palette(placeholder-text); font-size: 9pt;")
         form.addRow("", hint)
 
         self._on_launch = QCheckBox("Also check when this app starts")
@@ -119,15 +122,10 @@ class SettingsDialog(QDialog):
             self._no_notifier = QCheckBox("Turn off Plasma's own update notifier")
             self._no_notifier.setChecked(autostart.is_hidden())
             self._no_notifier.setToolTip(
-                "Plasma's update notifier (part of Discover) looks for updates "
-                "through PackageKit, which is what takes the package lock and "
-                "makes this app's checks and upgrades fail.\n\n"
-                "This app already tells you about the same zypper and Flatpak "
-                "updates, so the notifier is redundant.\n\n"
-                "Discover itself is unaffected: you can still open it to "
-                "install and remove software and to manage repositories. "
-                "Switching this back off restores the notifier at your next "
-                "login."
+                f"{autostart.NOTIFIER_EXPLAINED}\n\n"
+                "Discover itself is not affected. You can still use it to "
+                "install and remove software and to manage software sources. "
+                "Untick this to turn the notifier back on from your next login."
             )
             form.addRow("", self._no_notifier)
 
@@ -171,46 +169,51 @@ class SettingsDialog(QDialog):
         box = QGroupBox("Update behaviour")
         grid = QFormLayout(box)
 
-        self._allow_vendor = QCheckBox("Allow packages to change vendor")
+        self._allow_vendor = QCheckBox("Allow packages to switch supplier")
         self._allow_vendor.setChecked(self._prefs.dup_allow_vendor_change)
+        # zypper keeps a package with its vendor, not with the software source
+        # it came from: it can move between sources from the same vendor.
         self._allow_vendor.setToolTip(
-            "Adds --allow-vendor-change. Normally zypper dup keeps each package "
-            "with the repository that first provided it. Enable this only if you "
-            "deliberately use a third-party repo such as Packman (multimedia "
-            "codecs) and want its builds to replace the openSUSE ones.\n\n"
-            "Warning: it also lets any enabled repo - including one added by "
-            "mistake - take over system packages."
+            "Normally an update keeps each package from the same supplier, such "
+            "as openSUSE. Turn this on only if you use an extra software source "
+            "such as Packman (for multimedia codecs) and want its versions to "
+            "replace openSUSE's.\n\n"
+            "It also lets any software source you have switched on, including "
+            "one added by mistake, replace system packages.\n\n"
+            "zypper option: --allow-vendor-change"
         )
         grid.addRow("", self._allow_vendor)
 
         self._non_interactive = QCheckBox("Install without asking me to confirm")
         self._non_interactive.setChecked(self._prefs.dup_non_interactive)
         self._non_interactive.setToolTip(
-            "Adds -y --auto-agree-with-licenses, so zypper never pauses for "
-            "'Continue? [y/n]' and auto-accepts licence agreements.\n\n"
-            "If the upgrade hits a clash between packages, zypper does not "
-            "pick a fix for you: it stops, and nothing is installed. When the "
-            "update check has already found such a clash, the update asks you "
-            "anyway, since the choice can only be yours."
+            "Installs updates without stopping to ask whether to go ahead, and "
+            "accepts licence agreements automatically.\n\n"
+            "If packages in the update clash with each other, the update stops "
+            "and nothing is installed. If the last check for updates found a "
+            "clash, this setting is overridden for that update and you are "
+            "asked in the terminal to choose a fix.\n\n"
+            "zypper options: -y --auto-agree-with-licenses"
         )
         grid.addRow("", self._non_interactive)
 
         self._download_first = QCheckBox("Download all packages before installing")
         self._download_first.setChecked(self._prefs.dup_download_in_advance)
         self._download_first.setToolTip(
-            "Adds --download in-advance. Downloads every package first, then "
-            "installs them in one go. Safer on an unreliable connection - a "
-            "dropped download cannot leave the system half-upgraded - but uses "
-            "more disk during the update."
+            "Downloads every package before installing any of them. If the "
+            "connection drops during the download, nothing has been installed "
+            "yet, so the system is not left part-updated. Needs more free disk "
+            "space during the update.\n\n"
+            "zypper option: --download in-advance"
         )
         grid.addRow("", self._download_first)
 
         self._cleanup = QCheckBox("Free up disk space after updating")
         self._cleanup.setChecked(self._prefs.cleanup_after_update)
         self._cleanup.setToolTip(
-            "Runs 'zypper clean' after a successful update to delete the "
-            "downloaded package files (they are not needed once installed). "
-            "Frees disk space; completely safe."
+            "After a successful update, deletes the downloaded package files. "
+            "They are not needed once the packages are installed.\n\n"
+            "zypper command: zypper clean"
         )
         grid.addRow("", self._cleanup)
 
@@ -220,10 +223,10 @@ class SettingsDialog(QDialog):
         idx = self._reboot_action.findData(self._prefs.reboot_action)
         self._reboot_action.setCurrentIndex(idx if idx >= 0 else 0)
         self._reboot_action.setToolTip(
-            "Kernel, glibc, systemd and dbus updates need a reboot to take "
-            "effect."
+            "Some updates, such as a new Linux kernel, take effect only after "
+            "the computer restarts."
         )
-        grid.addRow("When an update needs a reboot:", self._reboot_action)
+        grid.addRow("When an update needs a restart:", self._reboot_action)
 
         self._reset_after = QComboBox()
         for key, label in RESET_AFTER_UPDATE.items():
@@ -231,20 +234,20 @@ class SettingsDialog(QDialog):
         idx = self._reset_after.findData(self._prefs.reset_after_update)
         self._reset_after.setCurrentIndex(idx if idx >= 0 else 0)
         self._reset_after.setToolTip(
-            "The terminal below the package list keeps the last update's output "
-            "until this point, then clears itself and collapses out of the way.\n\n"
-            "An update that failed always keeps its log, whichever option is "
-            "chosen - it is the only record of what went wrong. So does one that "
-            "is still running. You can also clear the log yourself at any time "
-            "with the 'Hide log' button or the terminal's right-click menu."
+            "Chooses when the terminal below the package list is cleared and "
+            "hidden after an update.\n\n"
+            "The log of a failed update is always kept, because it is the only "
+            "record of what went wrong. You can clear it yourself at any time "
+            "with Clear log or the terminal's right-click menu."
         )
-        grid.addRow("Reset the window after an update:", self._reset_after)
+        grid.addRow("Clear the update log:", self._reset_after)
 
         self._dup_args = QLineEdit(self._prefs.zypper_dup_args)
         self._dup_args.setPlaceholderText("(none)")
         self._dup_args.setToolTip(
-            "Appended to 'zypper dup' after the options set by the checkboxes "
-            "above. Only options the privileged helper accepts are allowed:\n"
+            "Extra options added to the zypper dup command, after the ones set "
+            "above. For people who use zypper at the command line. Only these "
+            "options are accepted:\n"
             + ", ".join(sorted(FLAGS | set(VALUED)))
         )
         grid.addRow("Extra 'zypper dup' options:", self._dup_args)
@@ -348,15 +351,16 @@ class SettingsDialog(QDialog):
         if rejected:
             QMessageBox.warning(
                 self,
-                "Unsupported zypper dup option",
-                "These will not be accepted by the update helper:\n\n"
+                "Option not allowed",
+                "These options cannot be used:\n\n"
                 + " ".join(rejected)
-                + "\n\nAllowed options are:\n"
+                + "\n\nNothing has been saved yet. Remove them, then press Save "
+                "again. The options that can be used are:\n"
                 + ", ".join(sorted(FLAGS | set(VALUED))),
             )
             return
         new = Prefs(
-            check_interval=self._interval.currentText(),
+            check_interval=self._interval.currentData(),
             check_on_launch=self._on_launch.isChecked(),
             notify_on_updates=self._notify.isChecked(),
             zypper_dup_args=self._dup_args.text().strip(),
@@ -435,10 +439,11 @@ class SettingsDialog(QDialog):
         self._disconnect_runner()
         if not ok:
             self._keep_old_interval()
-            QMessageBox.warning(
+            dialogs.show_failure(
                 self,
                 "Could not change the schedule",
-                f"The update schedule was not changed:\n{message}",
+                "The update schedule was not changed.",
+                message,
             )
         self.accept()
 

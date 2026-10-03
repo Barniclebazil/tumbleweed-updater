@@ -9,7 +9,7 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
 
-from tumbleweed_updater import autostart
+from tumbleweed_updater import autostart, dialogs
 from tumbleweed_updater.settings import SettingsStore
 from tumbleweed_updater.settingsdialog import SettingsDialog
 
@@ -172,12 +172,12 @@ def test_a_refused_schedule_change_keeps_the_old_schedule(app, store, monkeypatc
     (a dismissed password prompt, say) the stored cadence must go back to the
     one the timer is still running, or Settings shows a schedule the system
     never adopted."""
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(dialogs, "show_failure", lambda *a, **k: None)
     before = store.load().check_interval
     runner = _RecordingRunner()
     dialog = SettingsDialog(store, runner)
     other = next(label for label in ("daily", "weekly") if label != before)
-    dialog._interval.setCurrentText(other)
+    dialog._interval.setCurrentIndex(dialog._interval.findData(other))
 
     dialog._save()
     assert runner.calls == [other]
@@ -191,8 +191,8 @@ def test_a_refused_schedule_change_keeps_the_old_schedule(app, store, monkeypatc
 def test_an_accepted_schedule_change_is_kept(app, store):
     runner = _RecordingRunner()
     dialog = SettingsDialog(store, runner)
-    dialog._interval.setCurrentText("weekly" if store.load().check_interval != "weekly" else "daily")
-    wanted = dialog._interval.currentText()
+    wanted = "weekly" if store.load().check_interval != "weekly" else "daily"
+    dialog._interval.setCurrentIndex(dialog._interval.findData(wanted))
 
     dialog._save()
     runner.intervalFinished.emit(True, "")

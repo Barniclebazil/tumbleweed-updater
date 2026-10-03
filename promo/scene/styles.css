@@ -1,0 +1,152 @@
+/* The promo is 1920x1080 CSS pixels whatever the output size; the renderer
+   changes the device pixel ratio instead, so layout never changes. */
+
+:root {
+  --green: #73ba25;
+  --green-hi: #a6e35f;
+  --orange: #f67400;
+  --accent: #e95420;           /* the Plasma accent on the machine the screenshots came from */
+  --font: "Inter Variable", "Inter", "Poppins", "Noto Sans", sans-serif;
+  --display: "Inter Display", "Inter Variable", "Inter", "Poppins", "Noto Sans", sans-serif;  /* large type */
+  --ui: "Ubuntu", "Noto Sans", sans-serif;        /* the Plasma UI font in the screenshots */
+  --mono: "Hack", "DejaVu Sans Mono", "Source Code Pro", monospace;
+}
+
+/* Time comes only from JavaScript, so nothing may animate on its own. */
+*, *::before, *::after {
+  box-sizing: border-box;
+  animation: none !important;
+  transition: none !important;
+}
+
+html, body {
+  margin: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: #000;
+}
+
+#stage {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: #05070a;
+  font-family: var(--font);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+#world { position: absolute; inset: 0; transform-origin: 50% 50%; }
+#bg, #particles { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+#scenes { position: absolute; inset: 0; }
+.scene { position: absolute; inset: 0; display: none; transform-origin: 50% 50%; }
+
+#vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 75% 75% at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.5) 100%);
+}
+#letterbox > div { position: absolute; left: 0; right: 0; height: 138px; background: #000; }
+#letterbox .top { top: 0; }
+#letterbox .bottom { bottom: 0; }
+#flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+
+/* Feature text block: eyebrow, a title revealed line by line, and a body. */
+.tb { position: absolute; width: 760px; }
+.tb .eyebrow {
+  display: flex; align-items: center; gap: 18px;
+  font-size: 20px; font-weight: 600; letter-spacing: 0.38em; text-transform: uppercase;
+  color: var(--green);
+}
+.tb .eyebrow::before {
+  content: ""; width: 46px; height: 2px; background: currentColor;
+  box-shadow: 0 0 12px currentColor;
+}
+.tb .title {
+  margin-top: 26px;
+  font-family: var(--display);
+  font-size: 88px; font-weight: 800; line-height: 1.04; letter-spacing: -0.035em;
+}
+.tb .line { display: block; overflow: hidden; padding: 0 0.06em 0.1em 0; margin-bottom: -0.1em; }
+.tb .line > span {
+  display: inline-block;
+  background: linear-gradient(180deg, #ffffff 35%, #b4bec7 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tb .line > span em {
+  font-style: normal;
+  background: linear-gradient(180deg, var(--green-hi) 20%, var(--green) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tb.orange .line > span em { background-image: linear-gradient(180deg, #ffb066 10%, var(--orange) 100%); }
+.tb.orange .eyebrow { color: var(--orange); }
+.tb .body {
+  margin-top: 34px; max-width: 640px;
+  font-size: 27px; line-height: 1.5; font-weight: 400;
+  color: rgba(232, 238, 243, 0.64);
+}
+.tb .body code {
+  font-family: var(--mono); font-size: 0.86em; color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.08); padding: 0.05em 0.35em; border-radius: 6px;
+}
+
+/* A rebuilt Breeze Dark window, at the size of the real screenshots. */
+.win {
+  position: absolute; width: 780px;
+  font-family: var(--ui); font-size: 14.7px; color: #fcfcfc;
+  background: #202326; border-radius: 10px; overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 40px 120px rgba(0, 0, 0, 0.75), 0 0 80px rgba(115, 186, 37, 0.08);
+}
+.win .titlebar {
+  height: 32px; background: #292c30; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 15px; position: relative;
+}
+.win .titlebar .l, .win .titlebar .r { position: absolute; top: 0; height: 32px; display: flex; align-items: center; gap: 14px; opacity: 0.85; }
+.win .titlebar .l { left: 12px; }
+.win .titlebar .r { right: 14px; gap: 22px; }
+.win .menubar { height: 26px; background: #292c30; padding: 2px 19px; font-size: 14.7px; border-bottom: 1px solid #1b1d20; }
+.win .content { padding: 12px 22px 0; }
+.win .headline { font-size: 21px; font-weight: 700; margin: 2px 0 4px; }
+.win .subline { font-size: 13.5px; color: rgba(252, 252, 252, 0.5); margin-bottom: 14px; }
+.win .check { display: flex; align-items: center; gap: 10px; height: 27px; }
+.win .box {
+  width: 16px; height: 16px; border-radius: 3px; border: 1px solid #5a5e62; background: #1b1d20;
+  display: grid; place-items: center;
+}
+.win .box.on { background: #50332b; border-color: var(--accent); }
+.win .box.on::after { content: ""; width: 8px; height: 4px; border-left: 2px solid #fff; border-bottom: 2px solid #fff; transform: translateY(-1px) rotate(-45deg); }
+.win .check.dim { color: rgba(252, 252, 252, 0.4); }
+.win .tree { margin-top: 10px; border: 1px solid #3a3d41; border-radius: 3px; background: #1e1e1e; overflow: hidden; }
+.win .thead { display: grid; grid-template-columns: 250px 360px 1fr; height: 26px; background: #292c30; font-size: 13.5px; }
+.win .thead > div { padding: 4px 6px; border-right: 1px solid #535558; }
+.win .row { display: grid; grid-template-columns: 250px 360px 1fr; height: 20.8px; font-family: var(--mono); font-size: 11.6px; align-items: center; }
+.win .row:nth-child(odd) { background: #1b1b1b; }
+.win .row > div { padding: 0 6px; white-space: nowrap; overflow: hidden; }
+.win .row .pkg { padding-left: 36px; }
+.win .row.group { font-weight: 700; font-family: var(--mono); }
+.win .row.group .pkg { padding-left: 8px; }
+.win .buttons { display: flex; justify-content: space-between; padding: 12px 0 10px; }
+.win .btn {
+  font-family: var(--ui); font-size: 14.7px; padding: 6px 12px; border-radius: 4px;
+  background: #292c30; border: 1px solid #3a3d41;
+}
+.win .btn.default { background: #43302c; border-color: #7e4b3b; }
+.win .status { height: 22px; background: #202326; border-top: 1px solid #1b1d20; }
+
+/* Terminal panel, in the app's default colours. */
+.term {
+  position: absolute; background: #1b1b1b; color: #f0f0f0;
+  font-family: var(--mono); font-size: 17px; line-height: 1.42;
+  border: 1.5px solid var(--accent); border-radius: 6px; overflow: hidden;
+  padding: 18px 22px;
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.8), 0 0 60px rgba(233, 84, 32, 0.12);
+}
+.term .ln { white-space: pre; height: 1.42em; }
+.term .purple { color: #b77fe8; }
+.term .green { color: #5fd35f; }
+.term .teal { color: #3ec1c9; }
+.term .bold { font-weight: 700; }
+.term .dim { color: #8b9196; }
+.term .cursor { display: inline-block; width: 0.62em; height: 1.1em; background: #f0c000; vertical-align: -0.18em; }

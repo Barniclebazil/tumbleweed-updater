@@ -20,7 +20,14 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.isdir(os.path.join(_REPO, "tumbleweed_updater")):
     sys.path.insert(0, _REPO)
 
-from tumbleweed_updater.intervals import INTERVALS, is_valid, oncalendar_for  # noqa: E402
+from tumbleweed_updater.intervals import (  # noqa: E402
+    INTERVALS,
+    NOT_ACCEPTED,
+    NOT_STARTED,
+    NOT_SWITCHED_OFF,
+    is_valid,
+    oncalendar_for,
+)
 from tumbleweed_updater.paths import CHECK_TIMER, CHECK_TIMER_DROPIN  # noqa: E402
 
 
@@ -33,9 +40,6 @@ def _remove_dropin() -> None:
         os.rmdir(os.path.dirname(CHECK_TIMER_DROPIN))
     except OSError:
         pass
-
-
-_RELOAD_FAILED = "The system would not take up the new update-check schedule."
 
 
 def _systemctl(failure: str, *args: str) -> bool:
@@ -65,12 +69,9 @@ def main() -> int:
 
     label = sys.argv[1]
     if label == "manual":
-        ok = _systemctl(
-            "The system would not switch the background update check off.",
-            "disable", "--now", CHECK_TIMER,
-        )
+        ok = _systemctl(NOT_SWITCHED_OFF, "disable", "--now", CHECK_TIMER)
         _remove_dropin()
-        ok = _systemctl(_RELOAD_FAILED, "daemon-reload") and ok
+        ok = _systemctl(NOT_ACCEPTED, "daemon-reload") and ok
         return 0 if ok else 1
 
     expr = oncalendar_for(label)
@@ -83,13 +84,9 @@ def main() -> int:
             f"OnCalendar={expr}\n"
             "Persistent=true\n"
         )
-    if not _systemctl(_RELOAD_FAILED, "daemon-reload"):
+    if not _systemctl(NOT_ACCEPTED, "daemon-reload"):
         return 1
-    started = _systemctl(
-        "The system would not start the background update check on the new "
-        "schedule.",
-        "enable", "--now", CHECK_TIMER,
-    )
+    started = _systemctl(NOT_STARTED, "enable", "--now", CHECK_TIMER)
     return 0 if started else 1
 
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
+from . import intervals, repos
 from .paths import (
     HELPER_CHECK,
     HELPER_REPOS,
@@ -46,19 +47,59 @@ def _snapshots_helper(args: list[str]) -> str:
     return HELPER_SNAPSHOTS
 
 
+# Sentences written for the window. Anything else that arrives as a helper's
+# message is in the helper's own words or zypper's or snapper's, and the window
+# keeps it out of its main text: see is_plain().
+NOT_AUTHORISED = (
+    "The password request was cancelled or refused, so nothing was changed."
+)
+HELPER_MISSING = (
+    "Part of Tumbleweed Updater is missing. Reinstalling the "
+    "tumbleweed-updater package should fix this."
+)
+HELPER_FAILED = "Part of Tumbleweed Updater stopped with an error."
+NO_PASSWORD_PROMPT = (
+    "Tumbleweed Updater could not ask for the password, so nothing was changed."
+)
+
+# Every message a helper can finish with that is already written for the
+# user: the ones above, plus the sentences helper/repos and helper/set-interval
+# print on purpose.
+_PLAIN = frozenset(
+    {
+        NOT_AUTHORISED,
+        HELPER_MISSING,
+        HELPER_FAILED,
+        NO_PASSWORD_PROMPT,
+        repos.LOCKED_MESSAGE,
+        *intervals.FAILURES,
+    }
+)
+
+
+def is_plain(message: str) -> bool:
+    """Whether *message* can be shown to the user as it is.
+
+    False means it is somebody else's wording, such as "zypper exited 4" or the
+    last line of a traceback: still worth keeping for whoever needs it, but as
+    details under a plain sentence of the window's own.
+    """
+    return message in _PLAIN
+
+
 def _explain_exit(code: int, stderr: str) -> str:
     stderr = stderr.strip()
     if code == 126:
         # pkexec uses 126 both for a refused authorisation and for a helper it
         # will not run at all, which is what a bare source checkout looks like.
         if "not authorized" in stderr.lower() or not stderr:
-            return "Not authorised (the password dialog was dismissed or denied)."
+            return NOT_AUTHORISED
         return stderr.splitlines()[-1]
     if code == 127:
-        return "Helper not found - is the package installed correctly?"
+        return HELPER_MISSING
     if stderr:
         return stderr.splitlines()[-1]
-    return f"Helper exited with code {code}."
+    return HELPER_FAILED
 
 
 class PrivilegedRunner(QObject):
@@ -157,9 +198,9 @@ class PrivilegedRunner(QObject):
 
         def handle_error(_err) -> None:
             if capture_stdout:
-                on_finish(False, "Could not launch pkexec.", "")
+                on_finish(False, NO_PASSWORD_PROMPT, "")
             else:
-                on_finish(False, "Could not launch pkexec.")
+                on_finish(False, NO_PASSWORD_PROMPT)
 
         proc.finished.connect(handle_finished)
         proc.errorOccurred.connect(handle_error)

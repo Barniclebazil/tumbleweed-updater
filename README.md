@@ -22,7 +22,7 @@ Features:
    tray clears the terminal and collapses it, so the next time you open the
    window you are not still looking at the last update's output. When that
    happens is configurable in the settings, and you can clear the log yourself
-   at any time with the "Hide log" button or the terminal's right-click menu.
+   at any time with the "Clear log" button or the terminal's right-click menu.
 8. Copes with PackageKit. PackageKit holds the system package lock while it
    runs, which is what makes `zypper` fail with "System management is locked".
    The app waits for it instead of failing, and offers to switch off Plasma's

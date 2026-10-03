@@ -10,3 +10,4 @@ venv/
 *.tar.xz
 *.rpm
 User input/
+promo/out/

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
 from .paths import HELPER_RUN_UPDATE, resolve_helper
+from .progress import Phase, ZypperProgress, describe
 from .pty_session import PtySession
 
 
@@ -29,11 +30,34 @@ from .pty_session import PtySession
 class Step:
     label: str
     argv: list[str]
+    # How the window names this step when it fails or is cancelled: a noun
+    # phrase that starts a sentence, such as "The system update".
+    what: str = "The update"
+    # The zypper step. Its output carries zypper's package counters, which
+    # progress.py reads for the progress bar; any other step gets a moving bar
+    # and its label.
+    counts_packages: bool = False
+    # "--download only" among the options: nothing is installed, so the bar is
+    # full once the last package has been downloaded.
+    download_only: bool = False
+
+
+def _downloads_only(args: list[str]) -> bool:
+    """Whether zypper dup *args* ask for "--download only", either spelling."""
+    for n, token in enumerate(args):
+        if token == "--download=only":
+            return True
+        if token == "--download" and args[n + 1 : n + 2] == ["only"]:
+            return True
+    return False
 
 
 class UpdateRunner(QObject):
     stepStarted = Signal(str)  # label
     finished = Signal(bool, str)  # ok, message
+    # The progress bar under the window's buttons: its text, value and
+    # maximum. A maximum of 0 means a moving bar with no count to show.
+    progressChanged = Signal(str, int, int)
 
     def __init__(self, terminal, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -42,6 +66,15 @@ class UpdateRunner(QObject):
         self._session: PtySession | None = None
         self._running = False
         self._failed_label: str | None = None
+        self._step: Step | None = None
+        self._step_no = 0
+        self._steps = 0
+        self._progress: ZypperProgress | None = None
+        # Set once Ctrl-C has gone to a step: zypper may still finish the
+        # package it is on, and the bar must not carry on as if nothing
+        # happened.
+        self._cancelling = False
+        self._last_progress: tuple[str, int, int] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -62,12 +95,30 @@ class UpdateRunner(QObject):
             if cleanup:
                 argv.append("--cleanup")
             argv += dup_args or []
-            steps.append(Step("Upgrading the system with zypper dup", argv))
+            steps.append(
+                Step(
+                    "Updating the system",
+                    argv,
+                    "The system update",
+                    counts_packages=True,
+                    download_only=_downloads_only(dup_args or []),
+                )
+            )
         if do_flatpak_system:
-            steps.append(Step("Updating system Flatpaks", ["flatpak", "update"]))
+            steps.append(
+                Step(
+                    "Updating Flatpak apps for all users",
+                    ["flatpak", "update"],
+                    "The Flatpak update for all users",
+                )
+            )
         if do_flatpak_user:
             steps.append(
-                Step("Updating your Flatpaks", ["flatpak", "--user", "update"])
+                Step(
+                    "Updating your Flatpak apps",
+                    ["flatpak", "--user", "update"],
+                    "The update of your Flatpak apps",
+                )
             )
         return steps
 
@@ -77,6 +128,10 @@ class UpdateRunner(QObject):
         self._queue = list(steps)
         self._running = True
         self._failed_label = None
+        self._step_no = 0
+        self._steps = len(steps)
+        self._cancelling = False
+        self._last_progress = None
         self._terminal.reset()
         self._next()
 
@@ -90,7 +145,11 @@ class UpdateRunner(QObject):
         if self._session is None or not self._session.is_running:
             return False
         self._queue.clear()  # stop at the current step, whatever it answers
-        return self._session.interrupt() or self._session.terminate()
+        asked = self._session.interrupt() or self._session.terminate()
+        if asked:
+            self._cancelling = True
+            self._emit_progress()
+        return asked
 
     # -- queue pump ---------------------------------------------------------- #
 
@@ -109,8 +168,41 @@ class UpdateRunner(QObject):
         session.finished.connect(lambda code, s=step: self._step_done(s, code))
         self._session = session
         self._terminal.attach(session)  # wires session.output -> terminal.feed
+        self._step = step
+        self._step_no += 1
+        self._progress = (
+            ZypperProgress(step.download_only) if step.counts_packages else None
+        )
+        session.output.connect(self._on_output)
+        self._emit_progress()
         rows, cols = self._terminal.grid_size()
         session.start(step.argv, rows=rows, cols=cols)
+
+    def _on_output(self, data: bytes) -> None:
+        if self._progress is None or self._cancelling:
+            return
+        if self._progress.feed(data):
+            self._emit_progress()
+
+    def _emit_progress(self) -> None:
+        if self._cancelling:
+            update = ("Stopping the update", 0, 0)
+        elif self._step is None:
+            return
+        else:
+            snap = self._progress.snapshot if self._progress else None
+            text = describe(self._step.label, snap, self._step_no, self._steps)
+            # Before the first counter, and after the last while zypper runs
+            # its scripts and takes the closing snapshot, there is no count to
+            # show, so the bar moves instead of sitting still.
+            if snap is None or snap.phase in (Phase.WAITING, Phase.FINISHING):
+                update = (text, 0, 0)
+            else:
+                update = (text, snap.permille, 1000)
+        # zypper redraws its lines many times a second; only a change is sent.
+        if update != self._last_progress:
+            self._last_progress = update
+            self.progressChanged.emit(*update)
 
     def _step_done(self, step: Step, code: int) -> None:
         if self._session is not None:
@@ -127,9 +219,19 @@ class UpdateRunner(QObject):
         self._running = False
         self._queue.clear()
         self._failed_label = step.label
+        # The terminal keeps the exit code as the record of what happened; the
+        # message goes to the window's banner, so it is plain words.
         if code < 0:
-            reason = f"“{step.label}” was cancelled."
+            record = f"“{step.label}” was cancelled."
+            reason = (
+                f"{step.what} was cancelled. The terminal below shows how far "
+                "it got."
+            )
         else:
-            reason = f"“{step.label}” failed (exit {code})."
-        self._terminal.append_notice(f"\x1b[1;31m*** {reason} ***\x1b[0m")
+            record = f"“{step.label}” failed (exit {code})."
+            reason = (
+                f"{step.what} did not finish. The terminal below shows what "
+                "happened."
+            )
+        self._terminal.append_notice(f"\x1b[1;31m*** {record} ***\x1b[0m")
         self.finished.emit(False, reason)

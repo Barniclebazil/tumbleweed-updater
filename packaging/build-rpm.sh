@@ -32,6 +32,7 @@ mkdir "$staging/$NAME-$VERSION"
 tar --exclude=.git --exclude=__pycache__ --exclude='*.pyc' \
     --exclude=.pytest_cache --exclude='./venv' --exclude='./.venv' \
     --exclude='./dist' --exclude='./packaging/*.tar.*' --exclude='./*.rpm' \
+    --exclude='./promo' \
     -cf - . | tar -xf - -C "$staging/$NAME-$VERSION"
 tar -C "$staging" -cJf "$TOP/SOURCES/$NAME-$VERSION.tar.xz" "$NAME-$VERSION"
 
