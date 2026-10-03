@@ -13,6 +13,7 @@ from tumbleweed_updater import paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY = REPO_ROOT / "data" / "org.opensuse.tumbleweedupdater.policy"
 INSTALL_SH = REPO_ROOT / "packaging" / "install.sh"
+SPEC = REPO_ROOT / "packaging" / "tumbleweed-updater.spec"
 _EXEC_PATH = "org.freedesktop.policykit.exec.path"
 
 
@@ -106,3 +107,16 @@ def test_the_installer_puts_the_package_under_prefix():
         ).stdout
         assert sitelib.startswith(prefix + "/"), sitelib
         assert "/local/" not in sitelib, sitelib
+
+
+def test_the_package_requires_pkexec():
+    """Every helper is started through pkexec, and Tumbleweed ships it as its
+    own package. polkit does not pull it in and nothing else requires it (only
+    gvfs-backends recommends it), so a fresh install can be without it."""
+    requires = {
+        line.split(":", 1)[1].strip()
+        for line in SPEC.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Requires:")
+    }
+    assert "pkexec" in requires
+    assert "polkit" in requires

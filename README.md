@@ -102,14 +102,19 @@ time. That is why item 2 above, and not item 1, is the real fix.
 
 ## Requirements
 
-`python3-pyside6`, `python3-pyte`, `zypper`, `polkit` (with a polkit agent such
-as `polkit-kde-agent-6`), optionally `flatpak`, and `snapper-zypp-plugin` for
-snapshots. The RPM installed below declares all of these, so `zypper` pulls
-them in automatically.
+`python3-pyside6`, `python3-pyte`, `zypper`, `polkit` and `pkexec` (with a
+polkit agent such as `polkit-kde-agent-6`), optionally `flatpak`, and
+`snapper-zypp-plugin` for snapshots. The RPM installed below declares all of
+these, so `zypper` pulls them in automatically.
 
 ## Install
 
+Bring the system up to date first. Tumbleweed's servers only carry the newest
+version of each package, so installing on a system that is behind pulls in a
+newer Qt than the desktop was built with, and `zypper` stops with a clash.
+
 ```sh
+sudo zypper dup
 sudo zypper addrepo -f \
   https://barniclebazil.github.io/tumbleweed-updater/tumbleweed-updater.repo
 sudo zypper install tumbleweed-updater

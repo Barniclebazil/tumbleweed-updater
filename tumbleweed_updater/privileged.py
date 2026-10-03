@@ -61,6 +61,14 @@ HELPER_FAILED = "Part of Tumbleweed Updater stopped with an error."
 NO_PASSWORD_PROMPT = (
     "Tumbleweed Updater could not ask for the password, so nothing was changed."
 )
+PASSWORD_SERVICE_DOWN = (
+    "The part of the system that checks passwords is not running, so nothing "
+    "was changed. Restarting the computer should fix this."
+)
+PKEXEC_MISSING = (
+    "The program that asks for the administrator password is not installed, "
+    "so nothing was changed. Installing the pkexec package should fix this."
+)
 
 # Every message a helper can finish with that is already written for the
 # user: the ones above, plus the sentences helper/repos and helper/set-interval
@@ -71,6 +79,8 @@ _PLAIN = frozenset(
         HELPER_MISSING,
         HELPER_FAILED,
         NO_PASSWORD_PROMPT,
+        PASSWORD_SERVICE_DOWN,
+        PKEXEC_MISSING,
         repos.LOCKED_MESSAGE,
         *intervals.FAILURES,
     }
@@ -87,17 +97,35 @@ def is_plain(message: str) -> bool:
     return message in _PLAIN
 
 
+# pkexec's own failure lines, and what each one means for the user. pkexec
+# exits 127 for all but the dismissed one, so the exit code alone cannot tell a
+# missing helper from a refused password: only these lines can. pkexec prints
+# them untranslated (checked against polkit 127), so matching on the English
+# is safe. The first match wins.
+_PKEXEC_LINES = (
+    ("Request dismissed", NOT_AUTHORISED),
+    ("Not authorized", NOT_AUTHORISED),
+    ("No authentication agent found", NO_PASSWORD_PROMPT),
+    ("Error getting authority", PASSWORD_SERVICE_DOWN),
+    ("Error checking for authorization", PASSWORD_SERVICE_DOWN),
+    ("Cannot run program", HELPER_MISSING),
+)
+
+
 def _explain_exit(code: int, stderr: str) -> str:
     stderr = stderr.strip()
-    if code == 126:
-        # pkexec uses 126 both for a refused authorisation and for a helper it
-        # will not run at all, which is what a bare source checkout looks like.
-        if "not authorized" in stderr.lower() or not stderr:
-            return NOT_AUTHORISED
-        return stderr.splitlines()[-1]
-    if code == 127:
-        return HELPER_MISSING
+    if code in (126, 127):
+        # Only pkexec's own exit codes: a helper that fails prints zypper's or
+        # snapper's words, which are not to be read as pkexec's.
+        for line, meaning in _PKEXEC_LINES:
+            if line in stderr:
+                return meaning
+    if code == 126 and not stderr:
+        # 126 is what pkexec returns when the password window was closed.
+        return NOT_AUTHORISED
     if stderr:
+        # The helper's own words, or pkexec's for a case not listed above.
+        # Not plain, so the window keeps them under details.
         return stderr.splitlines()[-1]
     return HELPER_FAILED
 
@@ -196,11 +224,17 @@ class PrivilegedRunner(QObject):
             else:
                 on_finish(code == 0, message)
 
-        def handle_error(_err) -> None:
-            if capture_stdout:
-                on_finish(False, NO_PASSWORD_PROMPT, "")
+        def handle_error(err) -> None:
+            # FailedToStart means pkexec itself could not be run. Tumbleweed
+            # ships it as its own package, apart from polkit.
+            if err == QProcess.ProcessError.FailedToStart:
+                message = PKEXEC_MISSING
             else:
-                on_finish(False, NO_PASSWORD_PROMPT)
+                message = NO_PASSWORD_PROMPT
+            if capture_stdout:
+                on_finish(False, message, "")
+            else:
+                on_finish(False, message)
 
         proc.finished.connect(handle_finished)
         proc.errorOccurred.connect(handle_error)

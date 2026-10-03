@@ -49,6 +49,8 @@ def test_every_sentence_the_helpers_write_for_the_user_counts_as_plain():
         privileged.HELPER_MISSING,
         privileged.HELPER_FAILED,
         privileged.NO_PASSWORD_PROMPT,
+        privileged.PASSWORD_SERVICE_DOWN,
+        privileged.PKEXEC_MISSING,
         repos.LOCKED_MESSAGE,
         *intervals.FAILURES,
     ):

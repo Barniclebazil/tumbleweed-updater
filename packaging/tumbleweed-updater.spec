@@ -20,6 +20,7 @@ Requires:       python3-pyside6
 Requires:       python3-pyte
 Requires:       zypper
 Requires:       polkit
+Requires:       pkexec
 Recommends:     polkit-kde-agent-6
 Recommends:     flatpak
 Recommends:     snapper-zypp-plugin

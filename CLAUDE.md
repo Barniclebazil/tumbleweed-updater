@@ -413,6 +413,20 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `make install`; from a bare checkout the UI runs but "Check now" / "Update
   now" / "Snapshots…" will fail. `paths.resolve_helper()` prefers the
   installed copy and falls back to `helper/` for the UI-only case.
+* **pkexec's exit code does not say what went wrong.** It exits 126 only for a
+  dismissed password window and 127 for everything else: a wrong password or
+  a password window that crashed ("Not authorized"), no agent in the session
+  ("No authentication agent found"), polkitd not running ("Error getting
+  authority"), and a program that is not there ("Cannot run program"). Only
+  the last one is a missing part of this app, and treating every 127 as one
+  sent a user on a half-upgraded laptop off to reinstall a package that was
+  fine. `privileged._explain_exit()` matches those stderr lines
+  (`_PKEXEC_LINES`; pkexec prints them untranslated, checked in polkit 127's
+  binary), only for exit 126/127, and anything unmatched goes under details
+  rather than defaulting to `HELPER_MISSING`. **pkexec is its own package** on
+  Tumbleweed, apart from `polkit`, and nothing else requires it (only
+  `gvfs-backends` recommends it), hence `Requires: pkexec` in the spec and
+  `PKEXEC_MISSING` when `QProcess` reports `FailedToStart`.
 * The pre/post Btrfs snapshots around `zypper dup` itself are **not** taken
   here — `zypper dup` triggers `snapper-zypp-plugin` for those. `helper/check`
   only reports whether that plugin is installed; the window shows a warning
