@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.11.2
+Version:        0.12.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -71,6 +71,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sat Oct 03 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.12.0
+- Updates now show a progress bar with how many packages have been downloaded and installed. Messages throughout the app are rewritten in plain language, questions name their buttons after what they do, and technical details from other programs are kept out of the messages, under Show Details or in a tooltip.
+
 * Sat Sep 26 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.11.2
 - An update no longer crashes after installing when you ask to read a package's notes. When updates clash, Update now stays available and you choose a fix in the terminal, as with sudo zypper dup.
 
