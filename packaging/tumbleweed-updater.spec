@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.13.0
+Version:        0.13.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -72,6 +72,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Mon Oct 05 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.13.1
+- Version 0.13.0 was never published, because a check that runs before publishing crashed. This release fixes that check and is otherwise the same as 0.13.0.
+
 * Mon Oct 05 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.13.0
 - The progress bar now fills steadily through the whole system update instead of switching to a moving stripe. The terminal has colour themes, including one that copies Konsole's colours and font. The setting to download every package before installing is gone, because the package manager already does that, and the Settings and Snapshots windows no longer show the app's name twice.
 
