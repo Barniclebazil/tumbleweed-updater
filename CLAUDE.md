@@ -120,8 +120,14 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `tray.reload()` + `MainWindow.reload_icon()`.
 * **Update options** — `settings.dup_args_from_prefs()` turns the "Update
   behaviour" toggles into `zypper dup` args (`-y --auto-agree-with-licenses`,
-  `--allow-vendor-change`, `--download in-advance`) plus the free-text field,
-  de-duplicated. `helper/run-update [--cleanup] <args…>` checks every option
+  `--allow-vendor-change`) plus the free-text field, de-duplicated. There is
+  **no "download everything first" toggle** any more: libzypp 17.38 already
+  does that on its own. With no mode given, `TargetImpl::commit` picks
+  `DownloadInHeaps` for `/`, and every mode except `DownloadAsNeeded` runs
+  `CommitPackagePreloader` first ("in heaps" means "pre-loading all packages"
+  until it is finished). So the old tickbox's `--download in-advance` changed
+  nothing, and `SettingsStore.save()` removes its `zypper/downloadInAdvance`
+  key. Typed `--download …` options are still allowed. `helper/run-update [--cleanup] <args…>` checks every option
   against `dupargs.py` first (polkit matches only the helper's path, never its
   arguments, and the update action's authorisation stays cached for minutes),
   runs `zypper clean` after on `--cleanup`, and maps zypper exit **102/103**
@@ -164,16 +170,29 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   `(12/345),` at the right of the line (`src/callbacks/repo.h`, `fillsRhs`; it
   can wrap onto a line of its own), installs and removals start the line with
   `( 12/345) ` (`rpm.h`, the untranslated `"(%*u/%u) "`). Only the counters
-  are read, never the translated words around them. Downloads and installs
-  count together, an installed package counts as downloaded (one already on
-  disk prints no download line), the bar never goes backwards, and after the
-  last package it turns into a moving bar ("finishing off") while the scripts,
-  the closing snapshot and `zypper clean` run. Only the zypper step is read
-  (`Step.counts_packages`); Flatpak steps get a moving bar and their label, and
-  Cancel freezes it at "Stopping the update". Checks keep the small bar beside
-  "Check now". The formats come from zypper's source for 1.14.101, not from a
-  captured run, and `tests/test_progress.py` says so: the first real update is
-  the test of them.
+  are read, never the translated words around them. Before both, libzypp 17.38
+  downloads every package in parallel and draws **one preload bar**
+  (`CommitPreloadReportReceiver`, `src/callbacks/media.h`):
+  `Preloading Packages: [ (29.2 MiB / 33.6 MiB) (29.2 MiB/s)] ....<87%>===[|]`,
+  then lists the packages again as `Retrieving: … (n/N),`, all at once, from
+  what it fetched. `_PRELOAD` reads it by the pair of sizes either side of a
+  slash, not by its words and not by `<87%>`, which a narrow line drops; the
+  preload fills the download half of the bar and the text says "downloading
+  packages". Missing that pair is what left a 12-second moving bar at the start
+  of every update in the 2026-10-05 screencast. Downloads and installs count
+  together, an installed package counts as downloaded (one already on disk
+  prints no download line), and the bar never goes backwards. **The zypper
+  step is one bar, never a moving one**: empty while getting ready, counted
+  work fills it to `COUNTED_UPTO` (95%), and after the last package
+  ("finishing off": scripts, the closing snapshot, `zypper clean`, none of
+  them counted) `finishing_permille()` moves it on by the clock towards
+  `CREEP_TO` (99%), slowing as it goes, driven by `UpdateRunner._creep`. That
+  creep is time, not measurement, chosen because a still bar for half a minute
+  looked stuck. Only the zypper step is read (`Step.counts_packages`); Flatpak
+  steps keep a moving bar and their label, and so does Cancel ("Stopping the
+  update"). Checks keep the small bar beside "Check now". The formats come
+  from zypper's source for 1.14.101, not from a captured run, and
+  `tests/test_progress.py` says so: the first real update is the test of them.
 * **`app.py`** owns the `QApplication`, single-instance `QLocalServer`, tray,
   window, and `PrivilegedRunner`. `MainWindow.stateChanged` → `TrayIcon`.
 * **`packagekit.py`** (Qt-free) reads `/run/zypp.pid` and waits on it. Measured
@@ -467,8 +486,9 @@ the source tarball. See `promo/README.md`.
 
 * GUI modules may import Qt freely; `sources.py`, `statusfile.py`,
   `intervals.py`, `dupargs.py`, `paths.py`, `snapshots.py`, `packagekit.py`,
-  `autostart.py`, `repos.py`, `progress.py` must stay Qt-free (imported by the root helpers,
-  or by both the dialog and `app.py`).
+  `autostart.py`, `repos.py`, `progress.py`, `termthemes.py`, `konsole.py`
+  must stay Qt-free (imported by the root helpers, by both the dialog and
+  `app.py`, or kept so to be testable without a display).
 * Anything the user reads about a failure is written for someone who has never
   heard of a repository: no "repository", "metadata", "refresh" or exit codes
   in a banner or a dialog. zypper's own words stay untouched in the terminal
@@ -483,7 +503,36 @@ the source tarball. See `promo/README.md`.
 * User preferences → `settings.py` (`Prefs` dataclass + `QSettings`). Anything
   system-wide (the timer cadence) is applied by a helper, never written directly
   by the GUI. `MainWindow.open_settings()` re-reads `Prefs` after the dialog
-  closes and pushes terminal appearance into `TerminalWidget.apply_appearance()`
-  (which reflows the pyte grid for the new font metrics) and into the update
-  list's font/palette via `MainWindow._apply_list_appearance()`, so the list
-  matches the terminal's configured font and colours.
+  closes, turns them into one `termthemes.Appearance` with
+  `settings.appearance_from_prefs()`, and pushes that into
+  `TerminalWidget.apply_appearance()` (which reflows the pyte grid for the new
+  font metrics) and into the update list's font/palette via
+  `MainWindow._apply_list_appearance()`, so the list matches the terminal.
+* **Terminal themes** (`termthemes.py`, `konsole.py`). A theme is a
+  background, a text colour and the 16 ANSI colours, by pyte's names
+  (`ANSI_NAMES`; "brown" is yellow); `TerminalWidget` looks them up per widget
+  rather than in a module-wide table. `THEMES` is the list order after "Same
+  as Konsole": Tumbleweed (the default, and what Reset gives), Ubuntu (the
+  terminal Ubuntu 24.04 ships: Yaru's `#300A24` background and white text,
+  GNOME Terminal's default 16 colours, which Ubuntu does not patch), Breeze (the 16
+  colours the terminal had before themes), Gruvbox, Nord, Solarized Light.
+  `Prefs.term_theme` is one of those, `konsole` or `custom`; for `custom`,
+  `term_bg`/`term_fg` are the user's and `term_palette` names whose other 16
+  colours go with them. Changing a colour button in Settings turns the theme
+  into Custom. A config from before themes migrates in
+  `SettingsStore._load_theme()`: the old default colours become Tumbleweed,
+  anything else becomes Custom on Breeze, so it looks exactly as it did.
+  **"Same as Konsole"** copies colours *and* font from Konsole's default
+  profile: `konsolerc` → `DefaultProfile` → the `.profile` in
+  `$XDG_DATA_HOME/konsole` then `$XDG_DATA_DIRS/konsole` (following `Parent`)
+  → `ColorScheme` → `<name>.colorscheme`. KDE files are read by
+  `konsole._read_ini()`, not configparser, which refuses this machine's
+  `konsolerc` because it starts with a key before any section. Konsole
+  26.08's own schemes are compiled into `libkonsoleprivate`, not installed as
+  files, so a profile naming one cannot be read: Breeze and SolarizedLight map
+  to the themes here, anything else shows Breeze and says so (`note`, in the
+  theme list's tooltip). While Konsole is chosen the font rows show Konsole's
+  font, greyed, and Save keeps the user's own. The window follows Konsole while
+  it runs: `MainWindow._watch_konsole()` watches the folders (Konsole saves by
+  rename, so files would be missed) only while the theme or palette is
+  Konsole, and `_follow_konsole()` re-reads a second after a change settles.

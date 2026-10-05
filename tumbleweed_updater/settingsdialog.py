@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -26,6 +28,7 @@ from . import autostart, dialogs
 from .dupargs import FLAGS, VALUED, unknown_args
 from .icons import idle_icon, text_color
 from .intervals import INTERVALS, LABELS
+from .konsole import read_konsole
 from .settings import (
     DEFAULT_TERM_BG,
     DEFAULT_TERM_FG,
@@ -36,6 +39,7 @@ from .settings import (
     Prefs,
     SettingsStore,
 )
+from .termthemes import ANSI_NAMES, CUSTOM, DEFAULT_THEME, KONSOLE, THEMES
 
 
 class _ColorButton(QPushButton):
@@ -77,7 +81,9 @@ class _ColorButton(QPushButton):
 class SettingsDialog(QDialog):
     def __init__(self, store: SettingsStore, privileged, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Tumbleweed Updater — Settings")
+        # Qt adds " — Tumbleweed Updater" (the display name, set in app.py)
+        # to every window title on Linux, so the window names only itself.
+        self.setWindowTitle("Settings")
         self.setAttribute(Qt.WA_DeleteOnClose)
         self._store = store
         self._privileged = privileged
@@ -197,17 +203,6 @@ class SettingsDialog(QDialog):
         )
         grid.addRow("", self._non_interactive)
 
-        self._download_first = QCheckBox("Download all packages before installing")
-        self._download_first.setChecked(self._prefs.dup_download_in_advance)
-        self._download_first.setToolTip(
-            "Downloads every package before installing any of them. If the "
-            "connection drops during the download, nothing has been installed "
-            "yet, so the system is not left part-updated. Needs more free disk "
-            "space during the update.\n\n"
-            "zypper option: --download in-advance"
-        )
-        grid.addRow("", self._download_first)
-
         self._cleanup = QCheckBox("Free up disk space after updating")
         self._cleanup.setChecked(self._prefs.cleanup_after_update)
         self._cleanup.setToolTip(
@@ -265,23 +260,47 @@ class SettingsDialog(QDialog):
     def _build_terminal_group(self) -> QGroupBox:
         box = QGroupBox("Terminal appearance")
         grid = QFormLayout(box)
+        # Set before any widget exists, since their signals reach _preview().
+        # Whose other colours Custom keeps, and a guard so that a theme
+        # filling in the colour buttons does not count as the user changing
+        # them.
+        self._palette = self._prefs.term_palette
+        self._filling = False
+        self._shown_theme = None
+
+        # Read once: the dialog shows Konsole as it is when the dialog opens.
+        self._konsole = read_konsole()
+        self._theme = QComboBox()
+        self._theme.addItem(f"Same as Konsole ({self._konsole.scheme})", KONSOLE)
+        konsole_tip = (
+            "Uses the colours and font of Konsole's default profile, and "
+            "changes when they change in Konsole."
+        )
+        if self._konsole.note:
+            konsole_tip += "\n\n" + self._konsole.note
+        self._theme.setItemData(0, konsole_tip, Qt.ToolTipRole)
+        for key, theme in THEMES.items():
+            self._theme.addItem(theme.label, key)
+        self._theme.addItem("Custom", CUSTOM)
+        self._theme.setItemData(
+            self._theme.count() - 1,
+            "Your own background and text colours, with the other colours of "
+            "the theme you started from.",
+            Qt.ToolTipRole,
+        )
+        grid.addRow("Theme:", self._theme)
 
         self._use_system_font = QCheckBox("Use the system fixed-width font")
-        self._use_system_font.setChecked(not self._prefs.term_font_family)
         self._use_system_font.toggled.connect(self._on_font_toggle)
         grid.addRow("", self._use_system_font)
 
         self._font_family = QFontComboBox()
         self._font_family.setFontFilters(QFontComboBox.MonospacedFonts)
-        if self._prefs.term_font_family:
-            self._font_family.setCurrentFont(QFont(self._prefs.term_font_family))
-        self._font_family.setEnabled(bool(self._prefs.term_font_family))
         self._font_family.currentFontChanged.connect(lambda _f: self._preview())
         grid.addRow("Font:", self._font_family)
 
         self._font_size = QSpinBox()
         self._font_size.setRange(6, 32)
-        self._font_size.setValue(self._prefs.term_font_size or DEFAULT_TERM_FONT_SIZE)
         self._font_size.setSuffix(" pt")
         self._font_size.valueChanged.connect(lambda _v: self._preview())
         grid.addRow("Size:", self._font_size)
@@ -289,7 +308,7 @@ class SettingsDialog(QDialog):
         self._bg_btn = _ColorButton(self._prefs.term_bg or DEFAULT_TERM_BG)
         self._fg_btn = _ColorButton(self._prefs.term_fg or DEFAULT_TERM_FG)
         for btn in (self._bg_btn, self._fg_btn):
-            btn.colorChanged.connect(self._preview)
+            btn.colorChanged.connect(self._on_colour_changed)
         colors = QHBoxLayout()
         colors.addWidget(QLabel("Background:"))
         colors.addWidget(self._bg_btn)
@@ -298,29 +317,92 @@ class SettingsDialog(QDialog):
         colors.addWidget(self._fg_btn)
         colors.addStretch(1)
         reset = QPushButton("Reset")
+        reset.setToolTip("Go back to the Tumbleweed theme and the system font at 10 pt.")
         reset.clicked.connect(self._reset_terminal)
         colors.addWidget(reset)
         grid.addRow("Colours:", colors)
 
-        self._preview_label = QLabel(
-            "glibc  5.2.32-1.1 → 5.2.37-1.1\nChoose from above [1/2/c] (c): "
-        )
-        self._preview_label.setMinimumHeight(52)
+        self._preview_label = QLabel()
+        self._preview_label.setTextFormat(Qt.RichText)
         self._preview_label.setTextInteractionFlags(Qt.NoTextInteraction)
         grid.addRow("Preview:", self._preview_label)
 
-        self._preview()
+        # The user's own font. While Konsole is chosen the font rows show
+        # Konsole's instead, greyed out, and this is what is saved.
+        self._own_font = (
+            self._prefs.term_font_family,
+            self._prefs.term_font_size or DEFAULT_TERM_FONT_SIZE,
+        )
+        self._set_font_rows(*self._own_font)
+        self._theme.currentIndexChanged.connect(lambda _i: self._on_theme_chosen())
+        idx = self._theme.findData(self._prefs.term_theme)
+        self._theme.setCurrentIndex(idx if idx >= 0 else 1)
+        self._on_theme_chosen()
         return box
 
+    def _set_font_rows(self, family: str, size: int | None) -> None:
+        self._use_system_font.setChecked(not family)
+        if family:
+            self._font_family.setCurrentFont(QFont(family))
+        if size is None:
+            system = QFontDatabase.systemFont(QFontDatabase.FixedFont).pointSize()
+            size = system if system > 0 else DEFAULT_TERM_FONT_SIZE
+        self._font_size.setValue(size)
+
+    def _font_rows_editable(self) -> bool:
+        return self._theme.currentData() != KONSOLE
+
+    def _on_theme_chosen(self) -> None:
+        key = self._theme.currentData()
+        was = self._shown_theme
+        if key == was:
+            return
+        self._shown_theme = key
+        if was == KONSOLE:
+            # Back from Konsole: the user's own font again.
+            self._set_font_rows(*self._own_font)
+        elif key == KONSOLE:
+            self._own_font = (self._chosen_font_family(), self._font_size.value())
+        if key == KONSOLE:
+            k = self._konsole
+            self._fill_colours(k.theme.bg, k.theme.fg)
+            self._set_font_rows(k.font_family, k.font_size)
+            self._palette = KONSOLE
+        elif key in THEMES:
+            self._fill_colours(THEMES[key].bg, THEMES[key].fg)
+            self._palette = key
+        # Custom keeps the colours on the buttons and the palette they came
+        # with.
+        editable = key != KONSOLE
+        self._use_system_font.setEnabled(editable)
+        self._font_size.setEnabled(editable)
+        self._font_family.setEnabled(editable and not self._use_system_font.isChecked())
+        for widget in (self._use_system_font, self._font_family, self._font_size):
+            widget.setToolTip("" if editable else "Taken from Konsole.")
+        self._preview()
+
+    def _fill_colours(self, bg: str, fg: str) -> None:
+        self._filling = True
+        try:
+            self._bg_btn.set_color(bg)
+            self._fg_btn.set_color(fg)
+        finally:
+            self._filling = False
+
+    def _on_colour_changed(self) -> None:
+        if not self._filling and self._theme.currentData() != CUSTOM:
+            # Changing a theme's colour makes it the user's own. The palette
+            # stays the one it was, which _on_theme_chosen() leaves alone.
+            self._theme.setCurrentIndex(self._theme.findData(CUSTOM))
+        self._preview()
+
     def _on_font_toggle(self, use_system: bool) -> None:
-        self._font_family.setEnabled(not use_system)
+        self._font_family.setEnabled(not use_system and self._font_rows_editable())
         self._preview()
 
     def _reset_terminal(self) -> None:
-        self._use_system_font.setChecked(True)
-        self._font_size.setValue(DEFAULT_TERM_FONT_SIZE)
-        self._bg_btn.set_color(DEFAULT_TERM_BG)
-        self._fg_btn.set_color(DEFAULT_TERM_FG)
+        self._theme.setCurrentIndex(self._theme.findData(DEFAULT_THEME))
+        self._set_font_rows("", DEFAULT_TERM_FONT_SIZE)
         self._preview()
 
     def _chosen_font_family(self) -> str:
@@ -328,7 +410,19 @@ class SettingsDialog(QDialog):
             return ""
         return self._font_family.currentFont().family()
 
+    def _saved_font(self) -> tuple[str, int]:
+        if self._theme.currentData() == KONSOLE:
+            return self._own_font
+        return self._chosen_font_family(), self._font_size.value()
+
+    def _preview_colours(self) -> tuple[str, ...]:
+        if self._palette == KONSOLE:
+            return self._konsole.theme.colours
+        return THEMES.get(self._palette, THEMES[DEFAULT_THEME]).colours
+
     def _preview(self) -> None:
+        if not hasattr(self, "_preview_label"):
+            return  # still being built
         family = self._chosen_font_family()
         font = QFont(family) if family else QFont()
         if not family:
@@ -340,6 +434,24 @@ class SettingsDialog(QDialog):
             f"background:{self._bg_btn.color_name()};"
             f"color:{self._fg_btn.color_name()};"
             "padding:6px; border-radius:3px;"
+        )
+        # A few of the colours a theme adds, the way an update uses them.
+        c = dict(zip(ANSI_NAMES, self._preview_colours()))
+
+        def span(text, colour, bold=False):
+            weight = "font-weight:bold;" if bold else ""
+            return f'<span style="color:{colour};{weight}">{html.escape(text)}</span>'
+
+        lines = [
+            span("*** Updating the system ***", c["brightbrown"], bold=True),
+            html.escape("( 3/26) Installing: glibc-2.42-1.1 ...[")
+            + span("done", c["green"])
+            + "]",
+            span("Problem:", c["red"], bold=True)
+            + html.escape(" Choose from above [1/2/c] (c): "),
+        ]
+        self._preview_label.setText(
+            '<div style="white-space:pre">' + "<br>".join(lines) + "</div>"
         )
 
     # -- persistence ---------------------------------------------------------- #
@@ -365,14 +477,15 @@ class SettingsDialog(QDialog):
             notify_on_updates=self._notify.isChecked(),
             zypper_dup_args=self._dup_args.text().strip(),
             include_flatpak=self._flatpak.isChecked(),
-            term_font_family=self._chosen_font_family(),
-            term_font_size=self._font_size.value(),
+            term_font_family=self._saved_font()[0],
+            term_font_size=self._saved_font()[1],
             term_bg=self._bg_btn.color_name(),
             term_fg=self._fg_btn.color_name(),
+            term_theme=self._theme.currentData(),
+            term_palette=self._palette,
             icon_style=self._icon_style.currentData(),
             dup_allow_vendor_change=self._allow_vendor.isChecked(),
             dup_non_interactive=self._non_interactive.isChecked(),
-            dup_download_in_advance=self._download_first.isChecked(),
             cleanup_after_update=self._cleanup.isChecked(),
             reboot_action=self._reboot_action.currentData(),
             reset_after_update=self._reset_after.currentData(),

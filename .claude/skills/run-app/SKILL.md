@@ -17,14 +17,34 @@ that you can Read.
    `/usr/libexec/tumbleweed-updater/`, and pkexec refuses a helper that is not
    root-owned. So "Check now", "Update now" and "Snapshots…" run the
    *installed* helpers. A change under `helper/`, or in a Qt-free module a
-   helper imports, is only exercised after the user runs `! sudo make install`.
-   Never run it yourself.
+   helper imports, is only exercised after an install. You may run it
+   yourself when the user wants the change installed: `sudo -A make install`
+   (with `SUDO_ASKPASS` set, see below) or the `pkexec` form, either of which
+   asks the user for the password in a pop-up. Never try plain `sudo` or `!
+   sudo`: there is no terminal to read the password from, so it fails. Do not
+   install while the installed copy is running `zypper dup`
+   (`pgrep -a zypper` first), and restart the tray copy afterwards so it runs
+   the new code.
+
+   ```sh
+   sudo -A make install
+   # or, if SUDO_ASKPASS is not set:
+   pkexec /bin/sh -c "cd '$PWD' && sh packaging/install.sh"
+   ```
 2. An installed copy is usually already running from autostart
    (`/usr/bin/tumbleweed-updater --tray`). It holds the single-instance socket
    `$XDG_RUNTIME_DIR/tumbleweed-updater.instance`, and a plain
    `python3 -m tumbleweed_updater` would hand over to it and exit. **Do not
-   kill the installed copy.** If it is running an update, its `zypper dup` is a
-   child of it. Step 2 gives the checkout copy its own socket instead.
+   kill the installed copy to make room for the checkout.** If it is running
+   an update, its `zypper dup` is a child of it. Step 2 gives the checkout copy
+   its own socket instead. The one time to stop it is right after an install,
+   so it picks up the new code, and only when `pgrep -a zypper` shows no
+   update running:
+
+   ```sh
+   pkill -TERM -f '^/usr/bin/python3 /usr/bin/tumbleweed-updater'
+   setsid -f /usr/bin/tumbleweed-updater --tray >/dev/null 2>&1
+   ```
 3. Both copies share the user's settings (`QSettings`) and the status file.
    Do not change settings in the checkout copy unless that is what is being
    tested, and say so if you do.

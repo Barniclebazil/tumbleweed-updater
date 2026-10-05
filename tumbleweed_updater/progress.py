@@ -21,13 +21,27 @@ locale. The words around them are translated and are never read.
 
    Removals share the same counter, so they count as installs here.
 
-Both kinds of line are redrawn in place with ``\\r`` and carry colour and
+3. The parallel download that comes before both (src/callbacks/media.h,
+   ``CommitPreloadReportReceiver``, zypper 1.14.101 with libzypp 17.38): one
+   bar, redrawn in place, carrying the bytes fetched so far and the bytes
+   needed::
+
+       Preloading Packages: [ (29.2 MiB / 33.6 MiB) (29.2 MiB/s)] ....<87%>===[|]
+
+   It is recognised by that pair of sizes, never by its translated words, and
+   not by the ``<87%>``, which zypper leaves out when the line is narrow. No
+   other line of a ``zypper dup`` has two sizes either side of a slash. The
+   ``Retrieving:`` lines with their ``(12/345),`` counters still follow it,
+   all at once, as each package is taken from what was preloaded.
+
+All three kinds of line are redrawn in place with ``\\r`` and carry colour and
 cursor codes, and a chunk from the terminal can end anywhere, even half way
 through a counter.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -45,7 +59,30 @@ class Snapshot:
     phase: Phase
     done: int = 0  # the counter of the current phase
     total: int = 0
-    permille: int = 0  # the whole update, in tenths of a percent
+    permille: int = 0  # the whole bar, in tenths of a percent
+
+
+# How much of the bar the counted packages fill. The rest is for what comes
+# after the last package (scripts, the closing snapshot, clean-up), which
+# zypper does not count; see finishing_permille().
+COUNTED_UPTO = 950
+# Where the bar stops while that last part runs, however long it takes. Only
+# the end of the run fills the bar.
+CREEP_TO = 990
+# How quickly it gets there: about 962 after 11 seconds, 984 after a minute.
+_CREEP_SECONDS = 30.0
+
+
+def finishing_permille(seconds: float) -> int:
+    """Where the bar stands *seconds* after the last package went in.
+
+    This is a clock, not a measurement. Nothing zypper prints counts the
+    scripts, the closing snapshot or the clean-up, and a bar that sat still
+    for that long looked stuck. It slows as it goes and never reaches
+    CREEP_TO, so it cannot claim the update is done.
+    """
+    gap = CREEP_TO - COUNTED_UPTO
+    return min(CREEP_TO, CREEP_TO - math.ceil(gap * math.exp(-max(seconds, 0.0) / _CREEP_SECONDS)))
 
 
 # Terminal control codes: CSI sequences (colour, clear line, cursor movement),
@@ -56,6 +93,11 @@ _ESCAPE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()*+].|[^\[()*+])")
 _LINE_BREAK = re.compile(rb"[\r\n]")
 _DOWNLOAD = re.compile(rb"\((\d+)/(\d+)\),")
 _INSTALL = re.compile(rb"^\s*\(\s*(\d+)/(\d+)\) \S")
+# zypp's ByteCount: "512 B", "206.0 KiB", "29.2 MiB". The decimal mark follows
+# the locale, so a comma is accepted as well.
+_SIZE = rb"(\d+(?:[.,]\d+)?)\s*([KMGTP]?i?B)"
+_PRELOAD = re.compile(rb"\(\s*" + _SIZE + rb"\s*/\s*" + _SIZE + rb"\s*\)")
+_UNITS = {b"B": 0, b"KiB": 1, b"MiB": 2, b"GiB": 3, b"TiB": 4, b"PiB": 5}
 
 # The most of an unfinished line kept between chunks. A counter is read the
 # moment it arrives, so a line that never ends costs no more than this.
@@ -76,6 +118,7 @@ class ZypperProgress:
         self._to_download = 0
         self._installed = 0
         self._to_install = 0
+        self._preloaded = 0.0  # the share of the preload done, 0 to 1
         self.snapshot = Snapshot(Phase.WAITING)
 
     def feed(self, data: bytes) -> bool:
@@ -104,6 +147,29 @@ class ZypperProgress:
         if found:
             current, total = found[-1]
             self._count(True, int(current), int(total))
+            return
+        found = _PRELOAD.findall(line)
+        if found:
+            self._preload(*found[-1])
+
+    def _preload(self, got: bytes, got_unit: bytes, need: bytes, need_unit: bytes) -> None:
+        if got_unit not in _UNITS or need_unit not in _UNITS:
+            return
+        received = float(got.replace(b",", b".")) * 1024 ** _UNITS[got_unit]
+        required = float(need.replace(b",", b".")) * 1024 ** _UNITS[need_unit]
+        if not 0 < required or received > required:
+            return
+        share = received / required
+        if share <= self._preloaded:
+            return
+        self._preloaded = share
+        # Counters, if any have come yet, stay on the text; the preload has
+        # none of its own, and describe() says "downloading packages".
+        before = self.snapshot
+        done, total = (
+            (before.done, before.total) if before.phase is Phase.DOWNLOADING else (0, 0)
+        )
+        self._show(Phase.DOWNLOADING, done, total, self._permille())
 
     def _count(self, download: bool, current: int, total: int) -> None:
         if not 0 < current <= total:
@@ -133,29 +199,44 @@ class ZypperProgress:
             finished = bool(self._to_install) and (
                 self._installed >= self._to_install
             )
-        permille = 1000 if finished else self._permille()
+        if finished:
+            self._show(Phase.FINISHING, current, total, COUNTED_UPTO)
+        else:
+            self._show(phase, current, total, self._permille())
+
+    def _show(self, phase: Phase, done: int, total: int, permille: int) -> None:
         self.snapshot = Snapshot(
-            Phase.FINISHING if finished else phase,
-            current,
+            phase,
+            done,
             total,
             # Never backwards: a total learnt late can lower the estimate.
             max(permille, self.snapshot.permille),
         )
 
     def _permille(self) -> int:
+        """The counted part of the bar, 0 to COUNTED_UPTO."""
+        return int(self._share() * COUNTED_UPTO)
+
+    def _share(self) -> float:
         d, big_d = self._downloaded, self._to_download
         i, big_i = self._installed, self._to_install
+        pre = self._preloaded
+        if big_d:
+            # A package that is installed has been downloaded, even when no
+            # download line was shown for it because it was already here.
+            fetched = max(d, min(i, big_d), pre * big_d)
         if self._download_only:
-            return d * 1000 // big_d if big_d else 0
+            return fetched / big_d if big_d else pre
         if not big_i:
             # Only downloads so far, and the installs are still to come.
-            return d * 1000 // (2 * big_d)
-        if not big_d:
-            # Everything was already on this computer.
-            return i * 1000 // big_i
-        # A package that is installed has been downloaded, even when no
-        # download line was shown for it because it was already here.
-        return (max(d, min(i, big_d)) + i) * 1000 // (big_d + big_i)
+            return (fetched / big_d if big_d else pre) / 2
+        if big_d:
+            return (fetched + i) / (big_d + big_i)
+        if pre:
+            # Preloaded, and no download counter came after it.
+            return (pre + i / big_i) / 2
+        # Everything was already on this computer.
+        return i / big_i
 
 
 def _packages(n: int) -> str:
@@ -173,6 +254,8 @@ def describe(label: str, snapshot: Snapshot | None, step: int = 1, steps: int = 
         return f"{label}{where}"
     if snapshot.phase is Phase.WAITING:
         what = "getting ready"
+    elif snapshot.phase is Phase.DOWNLOADING and not snapshot.total:
+        what = "downloading packages"
     elif snapshot.phase is Phase.DOWNLOADING:
         what = f"downloading {snapshot.done} of {_packages(snapshot.total)}"
     elif snapshot.phase is Phase.INSTALLING:

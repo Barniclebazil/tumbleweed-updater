@@ -44,7 +44,8 @@ def _change_word(code: str) -> str:
 class SnapshotsDialog(QDialog):
     def __init__(self, privileged, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Tumbleweed Updater — Snapshots")
+        # Qt adds the app name itself; see settingsdialog.py.
+        self.setWindowTitle("Snapshots")
         self.resize(640, 460)
         # The runner outlives this dialog, so a dialog left alive after it is
         # closed keeps receiving results meant for its replacement (and used

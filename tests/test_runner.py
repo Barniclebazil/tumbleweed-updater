@@ -6,6 +6,8 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from tumbleweed_updater import runner as runner_module
+from tumbleweed_updater.progress import COUNTED_UPTO, CREEP_TO
 from tumbleweed_updater.runner import Step, UpdateRunner
 from tumbleweed_updater.terminal import TerminalWidget
 
@@ -183,13 +185,50 @@ def test_the_zypper_step_reports_its_progress(app):
     assert _wait(lambda: done != [])
 
     texts = [text for text, _value, _maximum in seen]
-    assert seen[0] == ("Updating the system: getting ready", 0, 0)
+    # One bar from start to end: empty while getting ready, never moving.
+    assert seen[0] == ("Updating the system: getting ready", 0, 1000)
     assert "Updating the system: downloading 2 of 2 packages" in texts
     assert "Updating the system: installing 1 of 2 packages" in texts
-    assert seen[-1] == ("Updating the system: finishing off", 0, 0)
-    counted = [value for _text, value, maximum in seen if maximum]
+    assert seen[-1] == ("Updating the system: finishing off", COUNTED_UPTO, 1000)
+    assert all(maximum == 1000 for _text, _value, maximum in seen)
+    counted = [value for _text, value, _maximum in seen]
     assert counted == sorted(counted), "the bar never goes backwards"
     assert len(seen) == len(set(seen)), "a redrawn line is not sent twice"
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+
+def test_after_the_last_package_the_bar_creeps_on_by_the_clock(app, monkeypatch):
+    """zypper counts nothing while its scripts, snapshot and clean-up run, so
+    the bar moves on by time, slowly, and stops short of full."""
+    clock = _Clock()
+    monkeypatch.setattr(runner_module, "time", clock)
+    term = TerminalWidget()
+    term.resize(600, 300)
+    runner = UpdateRunner(term)
+    seen = _progress_of(runner)
+    done = []
+    runner.finished.connect(lambda ok, msg: done.append(ok))
+
+    script = "printf '(1/1) Installing: a-1.0 [done]\\n'; echo SCRIPTS; sleep 30"
+    runner.start([Step("Updating the system", ["/bin/sh", "-c", script], counts_packages=True)])
+    assert _wait(lambda: "SCRIPTS" in term.buffer_text())
+    assert _wait(lambda: seen[-1] == ("Updating the system: finishing off", COUNTED_UPTO, 1000))
+
+    clock.now += 60
+    assert _wait(lambda: seen[-1][1] > COUNTED_UPTO)
+    assert seen[-1][1] < CREEP_TO
+
+    assert runner.cancel() is True
+    assert not runner._creep.isActive()
+    assert _wait(lambda: done != [])
+    assert seen[-1] == ("Stopping the update", 0, 0)
 
 
 def test_another_step_is_named_and_shows_a_moving_bar(app):

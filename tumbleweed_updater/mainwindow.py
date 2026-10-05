@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 
-from PySide6.QtCore import QProcess, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,14 +26,21 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, __version__, dialogs
 from .icons import window_icon
+from .konsole import watched_paths as konsole_paths
 from .privileged import is_plain
 from .repos import list_repos
 from .runner import UpdateRunner
-from .settings import SettingsStore, dup_args_from_prefs, interactive_dup_args
+from .settings import (
+    SettingsStore,
+    appearance_from_prefs,
+    dup_args_from_prefs,
+    interactive_dup_args,
+)
 from .settingsdialog import SettingsDialog
 from .snapshotsdialog import SnapshotsDialog
 from .sources import NEEDS_A_DECISION, Action, UpdateStatus, human_bytes
 from .statusfile import read as read_status
+from .termthemes import KONSOLE, Appearance
 from .terminal import TerminalWidget, build_terminal_font
 from .tray import TrayState
 from .workers import FlatpakChecker, LockWaiter
@@ -339,6 +346,19 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
+        # "Same as Konsole" follows Konsole while the app runs, which can be
+        # days from the tray. Konsole's files are few and small, so any change
+        # in their folders, a second after it settles, means a fresh read.
+        self._konsole_watch = QFileSystemWatcher(self)
+        self._konsole_watch.directoryChanged.connect(
+            lambda _path: self._konsole_settle.start()
+        )
+        self._konsole_settle = QTimer(self)
+        self._konsole_settle.setSingleShot(True)
+        self._konsole_settle.setInterval(1000)
+        self._konsole_settle.timeout.connect(self._follow_konsole)
+        self._watch_konsole(self._settings.load())
+
         self._has_been_shown = False
         self._flatpak = FlatpakChecker(self)
         self._flatpak.finished.connect(self._on_flatpak_result)
@@ -455,8 +475,9 @@ class MainWindow(QMainWindow):
         top_l.addWidget(self._tree, 1)
         self._splitter.addWidget(top)
 
-        p = self._settings.load()
-        self._apply_list_appearance(p)
+        self._appearance = appearance_from_prefs(self._settings.load())
+        a = self._appearance
+        self._apply_list_appearance(a)
 
         self._terminal_box = QWidget()
         tb_l = QVBoxLayout(self._terminal_box)
@@ -465,10 +486,11 @@ class MainWindow(QMainWindow):
             QLabel("Terminal (if the update asks a question, type your answer here):")
         )
         self._terminal = TerminalWidget(
-            font_family=p.term_font_family,
-            font_size=p.term_font_size,
-            bg=p.term_bg,
-            fg=p.term_fg,
+            font_family=a.font_family,
+            font_size=a.font_size,
+            bg=a.bg,
+            fg=a.fg,
+            colours=a.colours,
         )
         tb_l.addWidget(self._terminal, 1)
         self._splitter.addWidget(self._terminal_box)
@@ -697,16 +719,47 @@ class MainWindow(QMainWindow):
         self._flatpak_checked = True
         self._render()
 
-    def _apply_list_appearance(self, prefs) -> None:
-        self._tree.setFont(build_terminal_font(prefs.term_font_family, prefs.term_font_size))
-        base = QColor(prefs.term_bg)
+    def _apply_appearance(self, a: Appearance) -> None:
+        """Style the terminal and the update list from one Appearance."""
+        self._appearance = a
+        self._terminal.apply_appearance(
+            font_family=a.font_family,
+            font_size=a.font_size,
+            bg=a.bg,
+            fg=a.fg,
+            colours=a.colours,
+        )
+        self._apply_list_appearance(a)
+
+    def _watch_konsole(self, prefs) -> None:
+        """Watch Konsole's folders only while the terminal copies Konsole."""
+        uses = KONSOLE in (prefs.term_theme, prefs.term_palette)
+        watched = self._konsole_watch.directories()
+        if watched:
+            self._konsole_watch.removePaths(watched)
+        if uses:
+            paths = konsole_paths()
+            if paths:
+                self._konsole_watch.addPaths(paths)
+
+    def _follow_konsole(self) -> None:
+        prefs = self._settings.load()
+        if KONSOLE not in (prefs.term_theme, prefs.term_palette):
+            return
+        a = appearance_from_prefs(prefs)
+        if a != self._appearance:
+            self._apply_appearance(a)
+
+    def _apply_list_appearance(self, a: Appearance) -> None:
+        self._tree.setFont(build_terminal_font(a.font_family, a.font_size))
+        base = QColor(a.bg)
         pal = self._tree.palette()
         pal.setColor(QPalette.Base, base)
         pal.setColor(
             QPalette.AlternateBase,
             base.lighter(112) if base.lightness() < 128 else base.darker(106),
         )
-        pal.setColor(QPalette.Text, QColor(prefs.term_fg))
+        pal.setColor(QPalette.Text, QColor(a.fg))
         self._tree.setPalette(pal)
 
     # -- updating -------------------------------------------------------- #
@@ -787,8 +840,6 @@ class MainWindow(QMainWindow):
                     "Install without asking to confirm. If packages clash, the "
                     "update stops instead of asking."
                 )
-            if prefs.dup_download_in_advance:
-                notes.append("Download everything before installing")
             if prefs.cleanup_after_update:
                 notes.append("Delete the downloaded package files afterwards")
             if notes:
@@ -834,7 +885,8 @@ class MainWindow(QMainWindow):
 
     def _on_run_progress(self, text: str, value: int, maximum: int) -> None:
         self._run_text.setText(text)
-        # A maximum of 0 makes Qt draw a moving bar with no percentage.
+        # A maximum of 0 makes Qt draw a moving bar with no percentage. The
+        # zypper step never sends one; the Flatpak steps and Cancel do.
         self._run_bar.setRange(0, maximum)
         if maximum:
             self._run_bar.setValue(value)
@@ -1411,13 +1463,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self._settings, self._privileged, self)
         dlg.exec()
         p = self._settings.load()
-        self._terminal.apply_appearance(
-            font_family=p.term_font_family,
-            font_size=p.term_font_size,
-            bg=p.term_bg,
-            fg=p.term_fg,
-        )
-        self._apply_list_appearance(p)
+        self._apply_appearance(appearance_from_prefs(p))
+        self._watch_konsole(p)
         self.setWindowIcon(window_icon(p.icon_style))
         self._render()
         self.settingsApplied.emit()

@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QFontMetricsF,
     QGuiApplication,
     QKeyEvent,
     QPainter,
@@ -31,20 +32,16 @@ from PySide6.QtWidgets import (
 )
 
 from . import dialogs
+from .termthemes import ANSI_NAMES, DEFAULT_THEME, THEMES
 
 _HEX = re.compile(r"^[0-9a-fA-F]{6}$")
 
-# The 16 ANSI colours, tuned to sit comfortably on both light and dark
-# backgrounds (roughly the "Breeze" palette).
-_NAMED = {
-    "black": "#232627", "red": "#ed1515", "green": "#11d116",
-    "brown": "#f67400", "blue": "#1d99f3", "magenta": "#9b59b6",
-    "cyan": "#1abc9c", "white": "#fcfcfc",
-    "brightblack": "#7f8c8d", "brightred": "#c0392b",
-    "brightgreen": "#1cdc9a", "brightbrown": "#fdbc4b",
-    "brightblue": "#3daee9", "brightmagenta": "#8e44ad",
-    "brightcyan": "#16a085", "brightwhite": "#ffffff",
-}
+_DEFAULT = THEMES[DEFAULT_THEME]
+
+
+def _named(colours) -> dict[str, QColor]:
+    """pyte's colour names -> the theme's 16 colours."""
+    return {name: QColor(hexval) for name, hexval in zip(ANSI_NAMES, colours)}
 
 _KEYMAP = {
     Qt.Key_Return: b"\r", Qt.Key_Enter: b"\r",
@@ -57,15 +54,22 @@ _KEYMAP = {
 }
 
 
-def build_terminal_font(family: str, size: int) -> QFont:
-    if family:
-        font = QFont(family)
-    else:
-        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+def build_terminal_font(family: str, size: int | None) -> QFont:
+    """*size* None keeps the system fixed-width font's own size."""
+    system = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    font = QFont(family) if family else QFont(system)
+    if size is None:
+        size = system.pointSize() if system.pointSize() > 0 else 10
     font.setPointSize(max(6, int(size)))
     font.setStyleHint(QFont.Monospace)
     font.setFixedPitch(True)
     font.setKerning(False)
+    # The grid is whole pixels, one cell per character, but a run of text is
+    # drawn at the font's own advance, which is often fractional (Ubuntu Mono
+    # at 13 pt). Left alone, a long run drifts into the cells after it. Spacing
+    # the letters by the difference makes every character exactly one cell.
+    natural = QFontMetricsF(font).horizontalAdvance("M")
+    font.setLetterSpacing(QFont.AbsoluteSpacing, max(1, round(natural)) - natural)
     return font
 
 
@@ -93,13 +97,15 @@ class TerminalWidget(QAbstractScrollArea):
         parent=None,
         *,
         font_family: str = "",
-        font_size: int = 10,
-        bg: str = "#1b1b1b",
-        fg: str = "#f0f0f0",
+        font_size: int | None = 10,
+        bg: str = _DEFAULT.bg,
+        fg: str = _DEFAULT.fg,
+        colours=_DEFAULT.colours,
     ) -> None:
         super().__init__(parent)
         self._palette_bg = QColor(bg)
         self._palette_fg = QColor(fg)
+        self._named = _named(colours)
         self._apply_font(font_family, font_size)
 
         self._cols, self._rows = 80, 24
@@ -118,16 +124,23 @@ class TerminalWidget(QAbstractScrollArea):
 
     # -- appearance ------------------------------------------------------- #
 
-    def _apply_font(self, family: str, size: int) -> None:
+    def _apply_font(self, family: str, size: int | None) -> None:
         self.setFont(build_terminal_font(family, size))
         self._recompute_metrics()
 
     def apply_appearance(
-        self, *, font_family: str, font_size: int, bg: str, fg: str
+        self,
+        *,
+        font_family: str,
+        font_size: int | None,
+        bg: str,
+        fg: str,
+        colours=_DEFAULT.colours,
     ) -> None:
         """Re-style a live terminal from user settings and reflow the grid."""
         self._palette_bg = QColor(bg)
         self._palette_fg = QColor(fg)
+        self._named = _named(colours)
         self._apply_font(font_family, font_size)
         # Font metrics changed -> recompute rows/cols and tell the child.
         vp = self.viewport().size()
@@ -293,7 +306,7 @@ class TerminalWidget(QAbstractScrollArea):
             for x in range(self._cols):
                 char = row.get(x, default) if row else default
                 fg, bg, bold = _resolve_colors(
-                    char, self._palette_fg, self._palette_bg
+                    char, self._palette_fg, self._palette_bg, self._named
                 )
                 if _in_selection(sel, line_idx, x):
                     fg, bg = (bg or self._palette_bg), fg
@@ -489,20 +502,23 @@ def _sanitise_paste(text: str) -> str:
     )
 
 
-def _colour(value: str, bold: bool, fallback: QColor) -> QColor | None:
+def _colour(
+    value: str, bold: bool, fallback: QColor, named: dict[str, QColor]
+) -> QColor | None:
     if value == "default":
         return None if not bold else fallback
     if _HEX.match(value):
         return QColor("#" + value)
-    if bold and value in _NAMED and "bright" + value in _NAMED:
+    if bold and value in named and "bright" + value in named:
         value = "bright" + value
-    hexval = _NAMED.get(value)
-    return QColor(hexval) if hexval else fallback
+    return named.get(value, fallback)
 
 
-def _resolve_colors(char, default_fg: QColor, default_bg: QColor):
-    fg = _colour(char.fg, char.bold, default_fg) or default_fg
-    bg = _colour(char.bg, False, default_bg)
+def _resolve_colors(
+    char, default_fg: QColor, default_bg: QColor, named: dict[str, QColor]
+):
+    fg = _colour(char.fg, char.bold, default_fg, named) or default_fg
+    bg = _colour(char.bg, False, default_bg, named)
     if char.reverse:
         fg, bg = (bg or default_bg), fg
     return fg, bg, bool(char.bold)

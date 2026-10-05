@@ -16,6 +16,8 @@ from PySide6.QtCore import QSettings
 from . import APP_ID
 from .dupargs import VALUED
 from .intervals import DEFAULT_INTERVAL, INTERVALS, oncalendar_for
+from .konsole import read_konsole
+from .termthemes import CUSTOM, DEFAULT_THEME, KONSOLE, THEMES, Appearance
 
 __all__ = [
     "Prefs",
@@ -31,6 +33,7 @@ __all__ = [
     "REBOOT_ACTIONS",
     "RESET_AFTER_UPDATE",
     "dup_args_from_prefs",
+    "appearance_from_prefs",
 ]
 
 # What to do when an upgrade reports that a reboot is needed.
@@ -55,9 +58,13 @@ DEFAULT_RESET_AFTER_UPDATE = "on_close"
 
 # Terminal appearance defaults. An empty font family means "the system's
 # fixed-width font".
-DEFAULT_TERM_BG = "#1b1b1b"
-DEFAULT_TERM_FG = "#f0f0f0"
+DEFAULT_TERM_BG = THEMES[DEFAULT_THEME].bg
+DEFAULT_TERM_FG = THEMES[DEFAULT_THEME].fg
 DEFAULT_TERM_FONT_SIZE = 10
+# The colours before there were themes. A config still holding them never
+# chose any, and gets the default theme.
+_OLD_TERM_BG = "#1b1b1b"
+_OLD_TERM_FG = "#f0f0f0"
 
 # Tray/window icon styles -> label. Each name has a matching
 # data/icons/styles/<name>.svg (monochrome; currentColor as the stroke for the
@@ -84,7 +91,6 @@ class Prefs:
     # Update behaviour toggles (all map to well-known zypper dup options).
     dup_allow_vendor_change: bool = False
     dup_non_interactive: bool = False
-    dup_download_in_advance: bool = False
     cleanup_after_update: bool = True
     reboot_action: str = DEFAULT_REBOOT_ACTION  # key of REBOOT_ACTIONS
     # When the window returns to its clean state (key of RESET_AFTER_UPDATE).
@@ -94,6 +100,11 @@ class Prefs:
     term_font_size: int = DEFAULT_TERM_FONT_SIZE
     term_bg: str = DEFAULT_TERM_BG
     term_fg: str = DEFAULT_TERM_FG
+    # A key of termthemes.THEMES, KONSOLE or CUSTOM. For CUSTOM, term_bg and
+    # term_fg are the user's own and term_palette names the theme (or
+    # KONSOLE) whose other 16 colours go with them.
+    term_theme: str = DEFAULT_THEME
+    term_palette: str = DEFAULT_THEME
     # Tray/window icon style (key of ICON_STYLES).
     icon_style: str = DEFAULT_ICON_STYLE
     # Whether the one-time question about Plasma's own update notifier has been
@@ -107,12 +118,37 @@ class SettingsStore:
     def __init__(self) -> None:
         self._s = QSettings(APP_ID, "tumbleweed-updater")
 
+    def _load_theme(self) -> tuple[str, str, str, str]:
+        """The terminal's theme, palette, background and text colour."""
+        s = self._s
+        bg = s.value("term/bg", "", str)
+        fg = s.value("term/fg", "", str)
+        if not s.contains("term/theme"):
+            # Saved before there were themes. Untouched colours get the
+            # default theme; colours someone chose stay exactly as they look,
+            # on the 16 colours the terminal had then, which are Breeze's.
+            if bg in ("", _OLD_TERM_BG) and fg in ("", _OLD_TERM_FG):
+                return DEFAULT_THEME, DEFAULT_THEME, DEFAULT_TERM_BG, DEFAULT_TERM_FG
+            return CUSTOM, "breeze", bg or _OLD_TERM_BG, fg or _OLD_TERM_FG
+        theme = _one_of(
+            s.value("term/theme", DEFAULT_THEME, str),
+            (*THEMES, KONSOLE, CUSTOM),
+            DEFAULT_THEME,
+        )
+        palette = _one_of(
+            s.value("term/palette", DEFAULT_THEME, str), (*THEMES, KONSOLE), DEFAULT_THEME
+        )
+        if theme in THEMES:
+            return theme, theme, THEMES[theme].bg, THEMES[theme].fg
+        return theme, palette, bg or DEFAULT_TERM_BG, fg or DEFAULT_TERM_FG
+
     def load(self) -> Prefs:
         d = Prefs()
         s = self._s
         interval = s.value("check/interval", d.check_interval, str)
         if interval not in INTERVALS:
             interval = d.check_interval
+        term_theme, term_palette, term_bg, term_fg = self._load_theme()
         return Prefs(
             check_interval=interval,
             check_on_launch=_as_bool(s.value("check/onLaunch", d.check_on_launch)),
@@ -123,8 +159,10 @@ class SettingsStore:
             term_font_size=_as_int(
                 s.value("term/fontSize", d.term_font_size), d.term_font_size
             ),
-            term_bg=s.value("term/bg", d.term_bg, str) or d.term_bg,
-            term_fg=s.value("term/fg", d.term_fg, str) or d.term_fg,
+            term_bg=term_bg,
+            term_fg=term_fg,
+            term_theme=term_theme,
+            term_palette=term_palette,
             icon_style=_one_of(
                 s.value("ui/iconStyle", d.icon_style, str), ICON_STYLES, d.icon_style
             ),
@@ -133,9 +171,6 @@ class SettingsStore:
             ),
             dup_non_interactive=_as_bool(
                 s.value("zypper/nonInteractive", d.dup_non_interactive)
-            ),
-            dup_download_in_advance=_as_bool(
-                s.value("zypper/downloadInAdvance", d.dup_download_in_advance)
             ),
             cleanup_after_update=_as_bool(
                 s.value("update/cleanup", d.cleanup_after_update)
@@ -166,10 +201,15 @@ class SettingsStore:
         s.setValue("term/fontSize", p.term_font_size)
         s.setValue("term/bg", p.term_bg)
         s.setValue("term/fg", p.term_fg)
+        s.setValue("term/theme", p.term_theme)
+        s.setValue("term/palette", p.term_palette)
         s.setValue("ui/iconStyle", p.icon_style)
         s.setValue("zypper/allowVendorChange", p.dup_allow_vendor_change)
         s.setValue("zypper/nonInteractive", p.dup_non_interactive)
-        s.setValue("zypper/downloadInAdvance", p.dup_download_in_advance)
+        # A tickbox that added "--download in-advance". libzypp already
+        # downloads every package before installing any unless told
+        # "--download as-needed", so it changed nothing and is gone.
+        s.remove("zypper/downloadInAdvance")
         s.setValue("update/cleanup", p.cleanup_after_update)
         s.setValue("update/rebootAction", p.reboot_action)
         s.setValue("update/resetAfter", p.reset_after_update)
@@ -300,6 +340,31 @@ def _as_bool(value: object) -> bool:
     return bool(value)
 
 
+def appearance_from_prefs(p: Prefs) -> Appearance:
+    """What the terminal and the update list should look like.
+
+    Konsole is read afresh on every call, so a change made in Konsole shows
+    up the next time this is asked (mainwindow.py asks when Konsole's files
+    change).
+    """
+    if p.term_theme == KONSOLE:
+        k = read_konsole()
+        return Appearance(
+            k.font_family, k.font_size, k.theme.bg, k.theme.fg, k.theme.colours, k.note
+        )
+    family, size = p.term_font_family, p.term_font_size
+    if p.term_theme in THEMES:
+        t = THEMES[p.term_theme]
+        return Appearance(family, size, t.bg, t.fg, t.colours)
+    note = None
+    if p.term_palette == KONSOLE:
+        k = read_konsole()
+        colours, note = k.theme.colours, k.note
+    else:
+        colours = THEMES.get(p.term_palette, THEMES[DEFAULT_THEME]).colours
+    return Appearance(family, size, p.term_bg, p.term_fg, colours, note)
+
+
 def _as_int(value: object, default: int) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
@@ -316,16 +381,14 @@ def dup_args_from_prefs(p: Prefs) -> list[str]:
 
     Tokens already produced by the toggles are dropped from the free-text field
     so the two cannot contradict each other, but only whole options: a value
-    following an option (``--download in-advance``) is always kept, or dropping
-    a duplicate ``in-advance`` would leave a bare ``--download`` behind.
+    following an option (``--download as-needed``) is always kept, or dropping
+    a duplicate value would leave a bare ``--download`` behind.
     """
     args: list[str] = []
     if p.dup_non_interactive:
         args += ["-y", "--auto-agree-with-licenses"]
     if p.dup_allow_vendor_change:
         args.append("--allow-vendor-change")
-    if p.dup_download_in_advance:
-        args += ["--download", "in-advance"]
 
     skip_value = False
     for token in p.zypper_dup_args.split():

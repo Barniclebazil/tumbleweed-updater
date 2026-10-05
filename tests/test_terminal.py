@@ -222,3 +222,42 @@ def test_clear_is_refused_while_a_command_runs(app):
     sess.write(b"\x04")  # Ctrl-D
     assert _pump_until(lambda: not sess.is_running)
     assert term.clear() is True, "allowed again once the command has exited"
+
+
+def test_a_coloured_cell_takes_the_themes_colour(app):
+    from types import SimpleNamespace
+
+    from PySide6.QtGui import QColor
+
+    from tumbleweed_updater.terminal import _named, _resolve_colors
+    from tumbleweed_updater.termthemes import THEMES
+
+    red = SimpleNamespace(fg="red", bg="default", bold=False, reverse=False)
+    bold_red = SimpleNamespace(fg="red", bg="default", bold=True, reverse=False)
+    plain = QColor("#ffffff"), QColor("#000000")
+    for key in ("ubuntu", "nord"):
+        named = _named(THEMES[key].colours)
+        assert _resolve_colors(red, *plain, named)[0].name() == THEMES[key].colours[1]
+        assert _resolve_colors(bold_red, *plain, named)[0].name() == THEMES[key].colours[9]
+
+    term = TerminalWidget(colours=THEMES["ubuntu"].colours)
+    assert term._named["green"].name() == THEMES["ubuntu"].colours[2]
+    term.apply_appearance(
+        font_family="", font_size=None, bg="#000000", fg="#ffffff",
+        colours=THEMES["gruvbox"].colours,
+    )
+    assert term._named["green"].name() == THEMES["gruvbox"].colours[2]
+    term.grab()  # must paint without error
+
+
+def test_every_character_is_exactly_one_whole_cell_wide(app):
+    """A run of text is drawn at the font's own advance; a fractional one
+    drifted into the next run's cells (seen with Ubuntu Mono at 13 pt)."""
+    from PySide6.QtGui import QFontMetricsF
+
+    from tumbleweed_updater.terminal import build_terminal_font
+
+    for size in (9, 10, 11, 13, 15):
+        font = build_terminal_font("", size)
+        advance = QFontMetricsF(font).horizontalAdvance("M" * 40) / 40
+        assert abs(advance - round(advance)) < 0.02, (size, advance)

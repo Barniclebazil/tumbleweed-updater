@@ -11,9 +11,13 @@ from tumbleweed_updater.settings import (
     RESET_AFTER_UPDATE,
     Prefs,
     SettingsStore,
+    appearance_from_prefs,
     dup_args_from_prefs,
     interactive_dup_args,
 )
+from tumbleweed_updater import settings as settings_module
+from tumbleweed_updater.konsole import KonsoleLook
+from tumbleweed_updater.termthemes import THEMES
 
 
 @pytest.fixture(scope="module")
@@ -52,14 +56,11 @@ def test_dup_args_all_toggles():
     p = Prefs(
         dup_non_interactive=True,
         dup_allow_vendor_change=True,
-        dup_download_in_advance=True,
     )
     assert dup_args_from_prefs(p) == [
         "-y",
         "--auto-agree-with-licenses",
         "--allow-vendor-change",
-        "--download",
-        "in-advance",
     ]
 
 
@@ -75,7 +76,6 @@ def test_settings_roundtrip(app):
     original = Prefs(
         dup_allow_vendor_change=True,
         dup_non_interactive=True,
-        dup_download_in_advance=True,
         cleanup_after_update=False,
         reboot_action="offer",
         icon_style="shield",
@@ -84,7 +84,6 @@ def test_settings_roundtrip(app):
     loaded = store.load()
     assert loaded.dup_allow_vendor_change is True
     assert loaded.dup_non_interactive is True
-    assert loaded.dup_download_in_advance is True
     assert loaded.cleanup_after_update is False
     assert loaded.reboot_action == "offer"
     assert loaded.icon_style == "shield"
@@ -101,7 +100,6 @@ def test_settings_roundtrip_every_field(app):
         include_flatpak=False,
         dup_allow_vendor_change=True,
         dup_non_interactive=True,
-        dup_download_in_advance=True,
         cleanup_after_update=False,
         reboot_action="offer",
         reset_after_update="never",
@@ -109,6 +107,8 @@ def test_settings_roundtrip_every_field(app):
         term_font_size=14,
         term_bg="#112233",
         term_fg="#eeeeee",
+        term_theme="custom",
+        term_palette="nord",
         icon_style="package",
     )
     store.save(original)
@@ -153,15 +153,22 @@ def test_cleanup_default_is_on():
     assert Prefs().cleanup_after_update is True
     assert Prefs().dup_allow_vendor_change is False
     assert Prefs().dup_non_interactive is False
-    assert Prefs().dup_download_in_advance is False
+
+
+def test_saving_forgets_the_old_download_first_setting(app):
+    """The "Download all packages before installing" tickbox is gone: libzypp
+    downloads everything first by itself. Its key goes at the next save."""
+    store = SettingsStore()
+    store._s.setValue("zypper/downloadInAdvance", True)
+    store.save(store.load())
+    assert not store._s.contains("zypper/downloadInAdvance")
+    assert "--download" not in dup_args_from_prefs(store.load())
 
 
 def test_free_text_options_do_not_duplicate_the_toggles(app):
     """A duplicate option is dropped with its value, or a bare --download would
-    be left behind to swallow the next argument."""
-    both = Prefs(dup_download_in_advance=True, zypper_dup_args="--download in-advance --details")
-    assert dup_args_from_prefs(both) == ["--download", "in-advance", "--details"]
-
+    be left behind to swallow the next argument. A typed value is never
+    taken for a duplicate."""
     only_typed = Prefs(zypper_dup_args="--download in-advance")
     assert dup_args_from_prefs(only_typed) == ["--download", "in-advance"]
 
@@ -355,8 +362,7 @@ def test_an_interactive_run_drops_only_the_options_that_stop_zypper_asking():
     args = dup_args_from_prefs(
         Prefs(
             dup_non_interactive=True,
-            dup_download_in_advance=True,
-            zypper_dup_args="--no-confirm --details",
+            zypper_dup_args="--download in-advance --no-confirm --details",
         )
     )
     assert "-y" in args and "--no-confirm" in args
@@ -367,3 +373,90 @@ def test_an_interactive_run_drops_only_the_options_that_stop_zypper_asking():
         "in-advance",
         "--details",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Terminal themes
+# --------------------------------------------------------------------------- #
+
+def _old_style_config(store, bg=None, fg=None):
+    """A config saved before there were themes: colours, and no theme key."""
+    for key in ("term/theme", "term/palette", "term/bg", "term/fg"):
+        store._s.remove(key)
+    if bg is not None:
+        store._s.setValue("term/bg", bg)
+    if fg is not None:
+        store._s.setValue("term/fg", fg)
+
+
+def test_a_fresh_install_gets_the_tumbleweed_theme(app):
+    store = SettingsStore()
+    _old_style_config(store)
+    p = store.load()
+    assert (p.term_theme, p.term_palette) == ("tumbleweed", "tumbleweed")
+    assert (p.term_bg, p.term_fg) == (THEMES["tumbleweed"].bg, THEMES["tumbleweed"].fg)
+
+
+def test_the_old_default_colours_become_the_tumbleweed_theme(app):
+    store = SettingsStore()
+    _old_style_config(store, "#1b1b1b", "#f0f0f0")
+    assert store.load().term_theme == "tumbleweed"
+
+
+def test_colours_chosen_before_themes_stay_exactly_as_they_look(app):
+    store = SettingsStore()
+    _old_style_config(store, "#300a24", "#f0f0f0")
+    p = store.load()
+    assert (p.term_theme, p.term_palette) == ("custom", "breeze")
+    assert (p.term_bg, p.term_fg) == ("#300a24", "#f0f0f0")
+    a = appearance_from_prefs(p)
+    assert (a.bg, a.fg, a.colours) == ("#300a24", "#f0f0f0", THEMES["breeze"].colours)
+
+
+def test_a_junk_theme_falls_back_and_a_named_theme_uses_its_own_colours(app):
+    store = SettingsStore()
+    store._s.setValue("term/theme", "no-such-theme")
+    store._s.setValue("term/palette", "custom")
+    p = store.load()
+    assert (p.term_theme, p.term_palette) == ("tumbleweed", "tumbleweed")
+
+    store._s.setValue("term/theme", "nord")
+    store._s.setValue("term/bg", "#123456")
+    p = store.load()
+    assert p.term_bg == THEMES["nord"].bg
+
+
+def test_a_theme_gives_its_colours_and_the_users_font():
+    a = appearance_from_prefs(
+        Prefs(term_theme="gruvbox", term_font_family="Hack", term_font_size=12)
+    )
+    g = THEMES["gruvbox"]
+    assert (a.font_family, a.font_size, a.bg, a.fg, a.colours) == (
+        "Hack", 12, g.bg, g.fg, g.colours,
+    )
+
+
+def test_custom_keeps_the_other_colours_of_its_theme():
+    a = appearance_from_prefs(
+        Prefs(term_theme="custom", term_palette="ubuntu", term_bg="#000000", term_fg="#ffffff")
+    )
+    assert (a.bg, a.fg, a.colours) == ("#000000", "#ffffff", THEMES["ubuntu"].colours)
+
+
+def test_konsole_gives_its_colours_and_its_font(monkeypatch):
+    look = KonsoleLook("DarkPastels", THEMES["nord"], "Ubuntu Mono", 13, "a note")
+    monkeypatch.setattr(settings_module, "read_konsole", lambda: look)
+
+    a = appearance_from_prefs(Prefs(term_theme="konsole", term_font_family="Hack"))
+    assert (a.font_family, a.font_size, a.bg, a.colours, a.note) == (
+        "Ubuntu Mono", 13, THEMES["nord"].bg, THEMES["nord"].colours, "a note",
+    )
+
+    # Custom on Konsole's colours: the user's own font and background.
+    a = appearance_from_prefs(
+        Prefs(term_theme="custom", term_palette="konsole", term_bg="#010203",
+              term_font_family="Hack", term_font_size=9)
+    )
+    assert (a.font_family, a.font_size, a.bg, a.colours) == (
+        "Hack", 9, "#010203", THEMES["nord"].colours,
+    )

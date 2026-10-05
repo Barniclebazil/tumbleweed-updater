@@ -17,12 +17,13 @@ step 1 - we do not manage snapshots ourselves.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from .paths import HELPER_RUN_UPDATE, resolve_helper
-from .progress import Phase, ZypperProgress, describe
+from .progress import Phase, ZypperProgress, describe, finishing_permille
 from .pty_session import PtySession
 
 
@@ -34,8 +35,8 @@ class Step:
     # phrase that starts a sentence, such as "The system update".
     what: str = "The update"
     # The zypper step. Its output carries zypper's package counters, which
-    # progress.py reads for the progress bar; any other step gets a moving bar
-    # and its label.
+    # progress.py reads for the progress bar, which then fills from start to
+    # end; any other step gets a moving bar and its label.
     counts_packages: bool = False
     # "--download only" among the options: nothing is installed, so the bar is
     # full once the last package has been downloaded.
@@ -56,7 +57,8 @@ class UpdateRunner(QObject):
     stepStarted = Signal(str)  # label
     finished = Signal(bool, str)  # ok, message
     # The progress bar under the window's buttons: its text, value and
-    # maximum. A maximum of 0 means a moving bar with no count to show.
+    # maximum. A maximum of 0 means a moving bar with no count to show, which
+    # only the Flatpak steps and a cancelled run use.
     progressChanged = Signal(str, int, int)
 
     def __init__(self, terminal, parent: QObject | None = None) -> None:
@@ -75,6 +77,13 @@ class UpdateRunner(QObject):
         # happened.
         self._cancelling = False
         self._last_progress: tuple[str, int, int] | None = None
+        # After the zypper step's last package, while its scripts, snapshot
+        # and clean-up run, this moves the bar on by the clock
+        # (progress.finishing_permille). None until then.
+        self._finishing_since: float | None = None
+        self._creep = QTimer(self)
+        self._creep.setInterval(500)
+        self._creep.timeout.connect(self._emit_progress)
 
     @property
     def is_running(self) -> bool:
@@ -132,6 +141,7 @@ class UpdateRunner(QObject):
         self._steps = len(steps)
         self._cancelling = False
         self._last_progress = None
+        self._stop_creeping()
         self._terminal.reset()
         self._next()
 
@@ -148,6 +158,7 @@ class UpdateRunner(QObject):
         asked = self._session.interrupt() or self._session.terminate()
         if asked:
             self._cancelling = True
+            self._stop_creeping()
             self._emit_progress()
         return asked
 
@@ -192,19 +203,31 @@ class UpdateRunner(QObject):
         else:
             snap = self._progress.snapshot if self._progress else None
             text = describe(self._step.label, snap, self._step_no, self._steps)
-            # Before the first counter, and after the last while zypper runs
-            # its scripts and takes the closing snapshot, there is no count to
-            # show, so the bar moves instead of sitting still.
-            if snap is None or snap.phase in (Phase.WAITING, Phase.FINISHING):
+            if snap is None:
+                # Not zypper: nothing to count, so the bar moves.
                 update = (text, 0, 0)
+            elif snap.phase is Phase.FINISHING:
+                # Every package is in; scripts, the closing snapshot and the
+                # clean-up are left, and zypper counts none of them.
+                if self._finishing_since is None:
+                    self._finishing_since = time.monotonic()
+                    self._creep.start()
+                elapsed = time.monotonic() - self._finishing_since
+                update = (text, finishing_permille(elapsed), 1000)
             else:
+                # One bar for the whole step, empty until the first count.
                 update = (text, snap.permille, 1000)
         # zypper redraws its lines many times a second; only a change is sent.
         if update != self._last_progress:
             self._last_progress = update
             self.progressChanged.emit(*update)
 
+    def _stop_creeping(self) -> None:
+        self._creep.stop()
+        self._finishing_since = None
+
     def _step_done(self, step: Step, code: int) -> None:
+        self._stop_creeping()
         if self._session is not None:
             self._terminal.detach()
             self._session.deleteLater()

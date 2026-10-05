@@ -1180,8 +1180,8 @@ def test_the_row_shows_what_the_runner_reports(window):
     assert window._run_text.text() == "Updating the system: installing 40 of 360 packages"
     assert (window._run_bar.value(), window._run_bar.maximum()) == (553, 1000)
 
-    # No count to show: Qt draws a moving bar for a maximum of 0.
-    window._runner.progressChanged.emit("Updating the system: finishing off", 0, 0)
+    # No count to show (a Flatpak step): Qt draws a moving bar for a maximum of 0.
+    window._runner.progressChanged.emit("Updating your Flatpak apps", 0, 0)
     assert window._run_bar.maximum() == 0
     window._set_running(False)
 
@@ -1189,7 +1189,7 @@ def test_the_row_shows_what_the_runner_reports(window):
 def test_the_row_goes_when_the_run_ends_however_it_ends(window):
     for ok, message in ((True, "All updates completed."), (False, "The system update did not finish.")):
         window._set_running(True)
-        window._runner.progressChanged.emit("Updating the system: getting ready", 0, 0)
+        window._runner.progressChanged.emit("Updating the system: getting ready", 0, 1000)
 
         window._on_run_finished(ok, message)
 

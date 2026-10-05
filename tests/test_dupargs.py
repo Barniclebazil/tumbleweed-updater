@@ -26,7 +26,6 @@ def test_everything_the_settings_dialog_can_produce_is_allowed():
     every_toggle = Prefs(
         dup_non_interactive=True,
         dup_allow_vendor_change=True,
-        dup_download_in_advance=True,
     )
     assert dupargs.unknown_args(dup_args_from_prefs(every_toggle)) == []
 

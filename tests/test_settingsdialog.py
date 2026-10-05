@@ -198,3 +198,132 @@ def test_an_accepted_schedule_change_is_kept(app, store):
     runner.intervalFinished.emit(True, "")
 
     assert store.load().check_interval == wanted
+
+
+# --------------------------------------------------------------------------- #
+# Terminal themes
+# --------------------------------------------------------------------------- #
+
+from tumbleweed_updater import settingsdialog as settingsdialog_module  # noqa: E402
+from tumbleweed_updater.konsole import KonsoleLook  # noqa: E402
+from tumbleweed_updater.termthemes import THEMES  # noqa: E402
+
+
+@pytest.fixture
+def konsole(monkeypatch):
+    look = KonsoleLook("Ubuntu Breeze", THEMES["ubuntu"], "DejaVu Sans Mono", 13)
+    monkeypatch.setattr(settingsdialog_module, "read_konsole", lambda: look)
+    return look
+
+
+def _choose(dialog, key):
+    dialog._theme.setCurrentIndex(dialog._theme.findData(key))
+
+
+def _buttons(dialog):
+    return dialog._bg_btn.color_name(), dialog._fg_btn.color_name()
+
+
+def test_the_theme_list_starts_with_konsole_and_ends_with_custom(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    keys = [dialog._theme.itemData(i) for i in range(dialog._theme.count())]
+    assert keys == ["konsole", *THEMES, "custom"]
+    assert dialog._theme.itemText(0) == "Same as Konsole (Ubuntu Breeze)"
+    dialog.close()
+
+
+def test_choosing_a_theme_fills_in_the_colours_and_saves_it(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    _choose(dialog, "nord")
+    assert _buttons(dialog) == (THEMES["nord"].bg, THEMES["nord"].fg)
+    assert dialog._theme.currentData() == "nord", "filling in is not a change"
+
+    dialog._save()
+    p = store.load()
+    assert (p.term_theme, p.term_palette, p.term_bg) == ("nord", "nord", THEMES["nord"].bg)
+
+
+def test_changing_a_colour_makes_it_custom_and_keeps_the_other_colours(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    _choose(dialog, "ubuntu")
+    dialog._bg_btn.set_color("#000000")
+
+    assert dialog._theme.currentData() == "custom"
+    assert _buttons(dialog) == ("#000000", THEMES["ubuntu"].fg)
+    dialog._save()
+    p = store.load()
+    assert (p.term_theme, p.term_palette, p.term_bg) == ("custom", "ubuntu", "#000000")
+
+
+def test_konsole_shows_its_font_greyed_and_saves_the_users_own(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    _choose(dialog, "breeze")
+    dialog._use_system_font.setChecked(False)
+    dialog._font_family.setCurrentFont(dialog._font_family.currentFont())
+    own_family = dialog._chosen_font_family()
+    dialog._font_size.setValue(9)
+
+    _choose(dialog, "konsole")
+    assert _buttons(dialog) == (THEMES["ubuntu"].bg, THEMES["ubuntu"].fg)
+    assert dialog._font_size.value() == 13
+    assert not dialog._font_size.isEnabled()
+    assert not dialog._use_system_font.isEnabled()
+    assert not dialog._font_family.isEnabled()
+
+    dialog._save()
+    p = store.load()
+    assert p.term_theme == "konsole"
+    assert (p.term_font_family, p.term_font_size) == (own_family, 9)
+
+    # Leaving Konsole gives the user's own font back, ready to change.
+    _choose(dialog, "tumbleweed")
+    assert dialog._font_size.value() == 9
+    assert dialog._font_size.isEnabled() and dialog._font_family.isEnabled()
+    dialog.close()
+
+
+def test_reset_goes_back_to_tumbleweed_and_the_system_font(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    _choose(dialog, "konsole")
+    dialog._reset_terminal()
+
+    assert dialog._theme.currentData() == "tumbleweed"
+    assert _buttons(dialog) == (THEMES["tumbleweed"].bg, THEMES["tumbleweed"].fg)
+    assert dialog._use_system_font.isChecked()
+    assert dialog._font_size.value() == 10
+    assert dialog._font_size.isEnabled()
+    dialog.close()
+
+
+def test_the_preview_uses_the_themes_own_colours(app, store, konsole):
+    dialog = SettingsDialog(store, _StubRunner())
+    _choose(dialog, "gruvbox")
+    assert THEMES["gruvbox"].colours[2] in dialog._preview_label.text()
+    _choose(dialog, "konsole")
+    assert THEMES["ubuntu"].colours[2] in dialog._preview_label.text()
+    dialog.close()
+
+
+@pytest.mark.parametrize("theme, palette", [("tumbleweed", "tumbleweed"), ("konsole", "konsole"), ("custom", "nord")])
+def test_the_dialog_builds_without_an_error_from_any_saved_theme(app, store, konsole, monkeypatch, theme, palette):
+    """An error in a slot is only printed by Qt, never raised, so it is caught
+    here through sys.excepthook. The preview once ran before the dialog knew
+    its palette."""
+    import sys
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: errors.append(exc))
+    store._s.setValue("term/theme", theme)
+    store._s.setValue("term/palette", palette)
+    dialog = SettingsDialog(store, _StubRunner())
+    assert errors == []
+    assert dialog._theme.currentData() == theme
+    dialog.close()
+
+
+def test_the_window_names_only_itself(app, store):
+    """Qt adds " — Tumbleweed Updater" to the title on Linux, so a title that
+    named the app as well showed it twice and was cut short."""
+    dialog = SettingsDialog(store, _StubRunner())
+    assert dialog.windowTitle() == "Settings"
+    dialog.close()

@@ -98,3 +98,11 @@ def test_snappers_change_codes_are_shown_as_words():
     assert _change_word("-.....") == "Removed"
     assert _change_word("c.....") == "Changed"
     assert _change_word("....x.") == "Changed"
+
+
+def test_the_window_names_only_itself(app):
+    """Qt adds the app name to the title itself; see test_settingsdialog.py."""
+    window = QMainWindow()
+    dialog = SnapshotsDialog(_StubRunner(), window)
+    assert dialog.windowTitle() == "Snapshots"
+    dialog.close()
