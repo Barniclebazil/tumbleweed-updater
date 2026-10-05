@@ -39,6 +39,20 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture
+def runner(app):
+    """A PrivilegedRunner owned by the application, as app.py makes its own.
+
+    Not a free-standing one: a runner, the QProcess it owns and the handlers
+    connected between them refer to each other, so a runner left to Python
+    is freed by the cycle collector whenever that happens to run. Freeing it
+    that way deleted its QProcess twice, which crashed the suite at random
+    in CI (05/10/2026, caught under gdb: ~QProcess on freed memory). The app
+    never frees its runner while running, so only the tests met this.
+    """
+    return PrivilegedRunner(app)
+
+
 def _wait(pred, timeout=5000):
     loop = QEventLoop()
     t = QTimer()
@@ -83,9 +97,8 @@ def test_a_helper_quoting_pkexec_words_is_not_read_as_pkexec():
     )
 
 
-def test_no_pkexec_at_all_says_so(app, monkeypatch, tmp_path):
+def test_no_pkexec_at_all_says_so(runner, monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
-    runner = PrivilegedRunner()
     results = []
     runner.intervalFinished.connect(lambda ok, msg: results.append((ok, msg)))
 
@@ -94,7 +107,7 @@ def test_no_pkexec_at_all_says_so(app, monkeypatch, tmp_path):
     assert results == [(False, privileged.PKEXEC_MISSING)]
 
 
-def test_a_refused_password_through_a_real_process(app, monkeypatch, tmp_path):
+def test_a_refused_password_through_a_real_process(runner, monkeypatch, tmp_path):
     # A stand-in pkexec that fails the way the real one does after three
     # wrong passwords, or when the password window falls over.
     fake = tmp_path / "pkexec"
@@ -106,7 +119,6 @@ def test_a_refused_password_through_a_real_process(app, monkeypatch, tmp_path):
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}/usr/bin{os.pathsep}/bin")
-    runner = PrivilegedRunner()
     results = []
     runner.intervalFinished.connect(lambda ok, msg: results.append((ok, msg)))
 

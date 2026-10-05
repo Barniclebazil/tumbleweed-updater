@@ -11,3 +11,8 @@ venv/
 *.rpm
 User input/
 promo/out/
+
+# Working captures from KDE Spectacle (Screenshot_*/Screencast_*); the
+# README images in screenshots/ have their own names and stay tracked.
+screenshots/Screenshot_*
+screenshots/Screencast_*
