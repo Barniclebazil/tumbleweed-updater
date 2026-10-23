@@ -196,7 +196,10 @@ class Application:
             self.window.show_and_raise()
 
         if prefs.check_on_launch:
-            QTimer.singleShot(1500, self.window.trigger_check)
+            # Not trigger_check: that clears a deferral, and the app starts at
+            # every login, so a day or a week put off would last until the
+            # next one. This check still ends it if the reason has gone.
+            QTimer.singleShot(1500, self.window.trigger_launch_check)
 
     # -- IPC ------------------------------------------------------------- #
 
@@ -244,7 +247,7 @@ class Application:
         if status is None:
             return
         # Before the deferral is read: this can clear it, when the check comes
-        # back with every source reachable.
+        # back with the reason for it gone.
         self.window.apply_zypper_status(status)
         total = status.total
         if _should_notify(

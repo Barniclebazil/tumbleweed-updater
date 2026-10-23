@@ -345,22 +345,53 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   unreachable *and* the lock was not the problem (`stuck` in `_render_banner()`),
   `_stuck_sources_text()` replaces the raw error with the same advice — that is
   the situation the update genuinely cannot get itself past.
-  The banner's second button, **"Try again tomorrow"** (`_banner_btn_alt`), is
-  now its only one: the source is usually somebody else's server having a bad
-  afternoon and there is nothing useful to do until it is back. It stores
-  tomorrow's date in `SettingsStore.set_deferred_until()`, and
-  while that is in force the headline reads "Update check put off until
-  dd/mm/yyyy", `_emit_state()` emits `TrayState.IDLE` so the icon stops looking
-  like there is something to attend to, `app._should_notify()` stays quiet, and
-  the banner shrinks to one line with no buttons. Three things end it: "Check
-  now" (`_on_check_clicked()` clears it, which covers the tray menu and the
-  re-checks after a run), a check that comes back with no error and no failed
-  sources (`apply_zypper_status()` — nothing to hide from any more), and the
-  date arriving, which `deferred_until()` notices and tidies away on the next
-  read. Everything else the banner says is unaffected: a failed check, a held
-  lock and a missing snapshot plugin are real problems, not what was put off.
-  It is the one button `_update_banner_button()` does **not** grey out while
-  the package system is busy, since all it writes is a date in this user's
+  **Putting the check off** (`_banner_btn_alt`, "Remind me tomorrow", and
+  `_banner_btn_week`, "Remind me in a week"). The banner has no other button
+  for either case below, because there is nothing left to decide: the source
+  is usually somebody else's server having a bad afternoon, and the solver's
+  question can only be answered in the terminal. The two buttons are shown and
+  hidden together by `_show_banner(put_off=<reason>)`, and `_put_off(days,
+  reason)` stores the date through `SettingsStore.set_deferred_until()`. The
+  **reason** is stored beside it, in `check/deferredFor`, and there are two:
+  `DEFER_SOURCES` (a source is unreachable; offered with
+  `_missing_sources_text()`) and `DEFER_QUESTION` (the check stopped at the
+  solver's question, `needs_decision`, and is not `_is_stuck()`; offered with
+  `NEEDS_A_DECISION` plus `_PUT_OFF_A_QUESTION`). `deferred_for()` reads a
+  config from before reasons existed as `DEFER_SOURCES`, since that was the
+  only thing that could be put off; clearing or expiring the date removes both
+  keys. While a deferral is in force the headline reads "Update check put off
+  until dd/mm/yyyy", `_emit_state()` emits `TrayState.IDLE` so the icon stops
+  looking like there is something to attend to, `app._should_notify()` stays
+  quiet, and the banner shrinks to one line with no buttons
+  (`_deferred_sources_text()`, or `_DEFERRED_QUESTION`). **A question is hidden
+  only by a deferral made for a question** (`_question_put_off()`): one made
+  for a source says nothing about a question that has turned up since. The
+  stuck case and a failed check are never hidden, and neither is the Update
+  button, which stays live (`_system_update_possible()`), so a question put off
+  is a choice not to be nagged, not a way to lose the only place it can be
+  answered. This exists for 2026-10-23, when Tumbleweed published Qt 6.12
+  before the rebuilt Kdenlive and FreeCAD: the dry run stopped at a question
+  that only time would answer, and nothing could quieten it.
+  **Lifting is per reason**, in `apply_zypper_status()`. A check with no error
+  ends a `DEFER_QUESTION` deferral when `needs_decision` is false, and a
+  `DEFER_SOURCES` one when `failed_repos` is empty; a check that failed
+  outright learnt nothing and ends nothing. It is per reason because a week
+  put off for a question must not go on hiding real updates because some
+  other source failed one night, nor a day put off for a source end because a
+  question turned up. A lifted deferral gets the normal notification, because
+  `app._reload_status()` applies the status before `_should_notify()` reads the
+  deferral. Two more things end it. Every route that **asks** for a check
+  clears it through `_on_check_clicked()` → `_start_check(clear_deferral=True)`:
+  "Check now" in the window and the tray, the re-check after a run, the lock
+  wait and a source change. The check when the app starts does not, because
+  nobody asked for it: `app.py` calls `MainWindow.trigger_launch_check()` →
+  `_start_check(clear_deferral=False)`, since the app starts at every login and
+  would otherwise undo a week put off the next morning. Last, the date
+  arriving, which `deferred_until()` notices and tidies away on the next read.
+  Everything else the banner says is unaffected: a failed check, a held lock
+  and a missing snapshot plugin are real problems, not what was put off.
+  The pair is what `_update_banner_button()` does **not** grey out while the
+  package system is busy, since all they write is a date in this user's
   preferences.
   The banner itself is **not orange** for an unreachable source
   (`_BANNER_STYLES["plain"]`): one rule, orange for something wrong with this

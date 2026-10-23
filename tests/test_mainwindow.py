@@ -16,12 +16,22 @@ from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tumbleweed_updater import dialogs
-from tumbleweed_updater.mainwindow import MainWindow
+from tumbleweed_updater.mainwindow import (
+    _DEFERRED_QUESTION,
+    _PUT_OFF_A_QUESTION,
+    _WAITING_FOR_A_CHOICE,
+    MainWindow,
+)
 from tumbleweed_updater.privileged import HELPER_MISSING
 from tumbleweed_updater.tray import TrayState
 from tumbleweed_updater.repos import Repo, ReposResult
 from tumbleweed_updater.runner import Step
-from tumbleweed_updater.settings import Prefs, SettingsStore
+from tumbleweed_updater.settings import (
+    DEFER_QUESTION,
+    DEFER_SOURCES,
+    Prefs,
+    SettingsStore,
+)
 from tumbleweed_updater.sources import (
     NEEDS_A_DECISION,
     Action,
@@ -40,6 +50,7 @@ class _StubPrivileged(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.repo_calls = []
+        self.checks_started = 0
 
     @property
     def check_running(self) -> bool:
@@ -50,6 +61,7 @@ class _StubPrivileged(QObject):
         return False
 
     def run_check(self) -> bool:
+        self.checks_started += 1
         return True
 
     def set_repo_enabled(self, alias: str, enabled: bool) -> bool:
@@ -342,7 +354,8 @@ def test_one_unreachable_source_offers_nothing_but_the_deferral(window):
     _apply(window, packages=_some_packages(43), failed_repos=[("vlc", "VLC")])
 
     assert _banner_button(window) == ""
-    assert window._banner_btn_alt.text() == "Try again tomorrow"
+    assert window._banner_btn_alt.text() == "Remind me tomorrow"
+    assert window._banner_btn_week.text() == "Remind me in a week"
 
 
 def test_a_source_that_has_only_just_gone_is_a_passing_problem(window):
@@ -819,12 +832,13 @@ def test_a_check_that_worked_replaces_the_kept_list(window):
 
 
 # --------------------------------------------------------------------------- #
-# "Try again tomorrow".
+# "Remind me tomorrow" and "Remind me in a week".
 #
 # A source that cannot be reached is usually somebody else's server having a bad
 # afternoon. Until it comes back there is nothing useful to do, so the user can
 # stop being asked about it: the tray goes back to idle and the headline says
-# when the app will look again.
+# when the app will look again. A question from the solver can be put off the
+# same way, and each kind of deferral ends when its own reason has gone.
 # --------------------------------------------------------------------------- #
 
 
@@ -832,16 +846,32 @@ def _tomorrow() -> str:
     return (date.today() + timedelta(days=1)).strftime("%d/%m/%Y")
 
 
+def _in_a_week() -> str:
+    return (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
+
+
 def _defer(win):
-    """Press "Try again tomorrow"."""
+    """Press "Remind me tomorrow"."""
     win._banner_btn_alt.click()
+
+
+def _defer_for_a_week(win):
+    """Press "Remind me in a week"."""
+    win._banner_btn_week.click()
+
+
+def _the_remind_buttons_are_showing(win) -> bool:
+    shown = not win._banner_btn_alt.isHidden(), not win._banner_btn_week.isHidden()
+    assert shown[0] == shown[1], "the two buttons appear and disappear together"
+    return shown[0]
 
 
 def test_an_unreachable_source_offers_to_put_it_off(window):
     _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
 
-    assert window._banner_btn_alt.isVisible() or not window._banner_btn_alt.isHidden()
-    assert window._banner_btn_alt.text() == "Try again tomorrow"
+    assert _the_remind_buttons_are_showing(window)
+    assert window._banner_btn_alt.text() == "Remind me tomorrow"
+    assert window._banner_btn_week.text() == "Remind me in a week"
     # The only thing the banner offers now.
     assert _banner_button(window) == ""
 
@@ -851,7 +881,17 @@ def test_putting_it_off_stores_tomorrow_and_says_so(window):
     _defer(window)
 
     assert SettingsStore().deferred_until() == date.today() + timedelta(days=1)
+    assert SettingsStore().deferred_for() == DEFER_SOURCES
     assert window._headline.text() == f"Update check put off until {_tomorrow()}"
+
+
+def test_a_source_can_be_put_off_for_a_week(window):
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer_for_a_week(window)
+
+    assert SettingsStore().deferred_until() == date.today() + timedelta(days=7)
+    assert SettingsStore().deferred_for() == DEFER_SOURCES
+    assert window._headline.text() == f"Update check put off until {_in_a_week()}"
 
 
 def test_putting_it_off_takes_the_tray_back_to_idle(window):
@@ -874,7 +914,7 @@ def test_the_banner_shrinks_to_one_line_once_it_is_put_off(window):
     assert text == 'The software source "VLC" could not be reached.'
     # Nothing left to press: "Check now" is the way back.
     assert _banner_button(window) == ""
-    assert window._banner_btn_alt.isHidden()
+    assert not _the_remind_buttons_are_showing(window)
     # And the window's own button goes back to its ordinary label.
     assert window._btn_update.text() == "Update now…"
 
@@ -1065,7 +1105,7 @@ def test_a_question_keeps_the_update_button_live(window):
 def test_a_question_is_explained_without_orange(window):
     text = _apply(window, needs_decision=True)
 
-    assert text == NEEDS_A_DECISION
+    assert text == f"{NEEDS_A_DECISION} {_PUT_OFF_A_QUESTION}"
     # Nothing is wrong with this computer; the way on is the button.
     assert "#f67400" not in window._banner.styleSheet()
 
@@ -1103,6 +1143,137 @@ def test_an_ordinary_run_still_honours_no_confirm(window, monkeypatch):
     argv = _start_update(window, monkeypatch)
 
     assert "-y" in argv
+
+
+def test_a_question_offers_both_ways_to_put_it_off(window):
+    _apply(window, needs_decision=True)
+
+    assert _the_remind_buttons_are_showing(window)
+    assert window._banner_btn_alt.text() == "Remind me tomorrow"
+    assert window._banner_btn_week.text() == "Remind me in a week"
+    # Still plain: nothing is wrong with this computer.
+    assert "#f67400" not in window._banner.styleSheet()
+    # The one primary button stays free; the way on is the update button.
+    assert _banner_button(window) == ""
+
+
+def test_a_question_put_off_until_tomorrow_stores_the_reason(window):
+    _apply(window, needs_decision=True)
+    _defer(window)
+
+    assert SettingsStore().deferred_until() == date.today() + timedelta(days=1)
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+
+
+def test_a_question_put_off_for_a_week_stores_the_reason(window):
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    assert SettingsStore().deferred_until() == date.today() + timedelta(days=7)
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+
+
+def test_a_question_that_is_put_off_goes_quiet_but_stays_answerable(window):
+    seen = []
+    window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    assert window._headline.text() == f"Update check put off until {_in_a_week()}"
+    assert seen[-1] == (
+        TrayState.IDLE, f"Update check put off until {_in_a_week()}"
+    )
+    assert window._banner_label.text() == _DEFERRED_QUESTION
+    assert not _the_remind_buttons_are_showing(window)
+    assert "#f67400" not in window._banner.styleSheet()
+    # Putting it off hides the nagging, not the way to answer.
+    assert window._btn_update.isEnabled()
+
+
+def test_a_check_that_still_has_the_question_keeps_it_put_off(window):
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    _apply(window, needs_decision=True)
+
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+    assert window._headline.text() == f"Update check put off until {_in_a_week()}"
+
+
+def test_a_check_with_packages_lifts_a_put_off_question(window):
+    """The rebuilds arrived, so there is nothing left to wait for. An
+    unreachable source in the same check is a different matter and must not
+    keep the week going, or it would hide real updates."""
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    _apply(window, packages=_some_packages(5), failed_repos=[("vlc", "VLC")])
+
+    assert SettingsStore().deferred_until() is None
+    assert window._headline.text() == "5 updates available"
+
+
+def test_a_failed_check_does_not_lift_a_put_off_question(window):
+    """It learnt nothing about the question, either way."""
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    _apply(window, error="the check broke")
+
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+
+
+def test_a_put_off_source_does_not_hide_a_new_question(window):
+    """The deferral was for a source that cannot be reached. A question that
+    turned up since is news, and has to be shown as such."""
+    seen = []
+    window.stateChanged.connect(lambda state, tip: seen.append((state, tip)))
+    _apply(window, packages=_some_packages(42), failed_repos=[("vlc", "VLC")])
+    _defer(window)
+
+    _apply(window, needs_decision=True)
+
+    assert window._headline.text() == _WAITING_FOR_A_CHOICE
+    assert seen[-1] == (TrayState.UPDATES, _WAITING_FOR_A_CHOICE)
+    assert _the_remind_buttons_are_showing(window)
+
+
+def test_a_stuck_check_is_not_hidden_by_a_put_off_question(window):
+    """Stuck never offers a deferral and is never hidden by one."""
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+
+    text = _apply(window, needs_decision=True, failed_repos=[("vlc", "VLC")])
+
+    assert window._headline.text() == _WAITING_FOR_A_CHOICE
+    assert "You can also press Update now" in text
+    assert not _the_remind_buttons_are_showing(window)
+
+
+def test_the_check_at_launch_keeps_a_deferral(window):
+    """The app starts at every login. If that check cleared the deferral, a
+    week would last until the next morning."""
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+    before = window._privileged.checks_started
+
+    window.trigger_launch_check()
+
+    assert window._privileged.checks_started == before + 1, "the check started"
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+    assert SettingsStore().deferred_until() == date.today() + timedelta(days=7)
+
+
+def test_checking_now_clears_a_put_off_question(window):
+    _apply(window, needs_decision=True)
+    _defer_for_a_week(window)
+    before = window._privileged.checks_started
+
+    window._on_check_clicked()
+
+    assert window._privileged.checks_started == before + 1
+    assert SettingsStore().deferred_until() is None
+    assert SettingsStore().deferred_for() is None
 
 
 def test_a_stuck_check_offers_the_terminal_when_there_is_a_question(window):

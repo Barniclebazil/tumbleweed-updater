@@ -79,6 +79,13 @@ ICON_STYLES = {
 }
 DEFAULT_ICON_STYLE = "tumbleweed"
 
+# Why the check was put off. "sources": a software source could not be
+# reached, so the deferral lifts when it comes back. "question": the check
+# stopped at a question only the user can answer in the terminal, so it lifts
+# when the question has gone.
+DEFER_SOURCES = "sources"
+DEFER_QUESTION = "question"
+
 
 @dataclass
 class Prefs:
@@ -298,12 +305,15 @@ class SettingsStore:
                 return None
         return None
 
-    # -- putting the check off for a day ---------------------------------- #
+    # -- putting the check off for a day or a week ------------------------ #
     #
-    # A source that cannot be reached is usually somebody else's server having
-    # a bad afternoon. Until it comes back there is nothing useful to do, so
-    # the window offers to stop asking until tomorrow. A date, not a timestamp,
-    # because a date is what the window shows the user.
+    # Two things can make the check pointless for now. A source that cannot be
+    # reached is usually somebody else's server having a bad afternoon. A
+    # question from the solver cannot be answered by the check at all, only in
+    # the terminal. For either, the window lets the user choose a day or a week
+    # to be reminded. The reason is stored with the date so that a check which
+    # finds the reason gone can end the deferral early. A date, not a
+    # timestamp, because a date is what the window shows the user.
 
     def deferred_until(self) -> date | None:
         """The day the check is deferred until, or None if it is not.
@@ -325,11 +335,27 @@ class SettingsStore:
             return None
         return day
 
-    def set_deferred_until(self, day: date | None) -> None:
+    def deferred_for(self) -> str | None:
+        """Why the check is deferred (DEFER_SOURCES or DEFER_QUESTION), or None.
+
+        A config written before reasons existed has a date and no reason. That
+        could only ever have come from an unreachable source, so it reads as
+        one.
+        """
+        if self.deferred_until() is None:
+            return None
+        reason = self._s.value("check/deferredFor", "", str)
+        if reason in (DEFER_SOURCES, DEFER_QUESTION):
+            return reason
+        return DEFER_SOURCES
+
+    def set_deferred_until(self, day: date | None, reason: str = DEFER_SOURCES) -> None:
         if day is None:
             self._s.remove("check/deferredUntil")
+            self._s.remove("check/deferredFor")
         else:
             self._s.setValue("check/deferredUntil", day.isoformat())
+            self._s.setValue("check/deferredFor", reason)
         self._s.sync()
 
 

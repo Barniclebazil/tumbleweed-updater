@@ -7,6 +7,8 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from tumbleweed_updater.settings import (
+    DEFER_QUESTION,
+    DEFER_SOURCES,
     REBOOT_ACTIONS,
     RESET_AFTER_UPDATE,
     Prefs,
@@ -307,7 +309,7 @@ def test_the_settings_dialog_cannot_clobber_the_dates(app):
 
 
 # --------------------------------------------------------------------------- #
-# Putting the check off for a day.
+# Putting the check off for a day or a week.
 # --------------------------------------------------------------------------- #
 
 
@@ -331,6 +333,53 @@ def test_a_deferral_that_has_arrived_is_over(app):
 
     assert store.deferred_until() is None
     assert store._s.value("check/deferredUntil", "", str) == ""
+
+
+def test_the_reason_for_a_deferral_round_trips(app):
+    """The window lifts a deferral when its reason has gone, so the reason has
+    to survive a restart as surely as the date does."""
+    tomorrow = date.today() + timedelta(days=1)
+    SettingsStore().set_deferred_until(tomorrow, DEFER_QUESTION)
+
+    assert SettingsStore().deferred_for() == DEFER_QUESTION
+
+
+def test_a_deferral_without_a_reason_is_for_sources(app):
+    SettingsStore().set_deferred_until(date.today() + timedelta(days=1))
+
+    assert SettingsStore().deferred_for() == DEFER_SOURCES
+
+
+def test_a_deferral_from_before_reasons_was_for_sources(app):
+    """Configs written before reasons existed only ever deferred for an
+    unreachable source, so a date with no reason must still read that way."""
+    store = SettingsStore()
+    store._s.setValue("check/deferredUntil", (date.today() + timedelta(days=1)).isoformat())
+    store._s.sync()
+
+    assert store.deferred_for() == DEFER_SOURCES
+
+
+def test_no_reason_when_there_is_no_deferral(app):
+    assert SettingsStore().deferred_for() is None
+
+
+def test_clearing_a_deferral_clears_its_reason(app):
+    store = SettingsStore()
+    store.set_deferred_until(date.today() + timedelta(days=1), DEFER_QUESTION)
+    store.set_deferred_until(None)
+
+    assert store._s.value("check/deferredFor", "", str) == ""
+    assert store._s.value("check/deferredUntil", "", str) == ""
+
+
+def test_a_deferral_that_has_arrived_takes_its_reason_with_it(app):
+    store = SettingsStore()
+    store.set_deferred_until(date.today(), DEFER_QUESTION)
+
+    assert store.deferred_for() is None
+    assert store._s.value("check/deferredUntil", "", str) == ""
+    assert store._s.value("check/deferredFor", "", str) == ""
 
 
 def test_yesterdays_deferral_is_over_too(app):

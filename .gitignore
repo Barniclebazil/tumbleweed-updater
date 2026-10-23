@@ -16,3 +16,7 @@ promo/out/
 # README images in screenshots/ have their own names and stay tracked.
 screenshots/Screenshot_*
 screenshots/Screencast_*
+
+# The orchestrate skill's task table, and the page it renders from it.
+plan.md
+plan.html

@@ -31,6 +31,8 @@ from .privileged import is_plain
 from .repos import list_repos
 from .runner import UpdateRunner
 from .settings import (
+    DEFER_QUESTION,
+    DEFER_SOURCES,
     SettingsStore,
     appearance_from_prefs,
     dup_args_from_prefs,
@@ -95,6 +97,21 @@ _UPDATE_BUTTON_TEXT = "Update now…"
 # solver (ZypperResult.needs_decision). The same words in both places so the
 # panel and the window cannot disagree.
 _WAITING_FOR_A_CHOICE = "Updates are waiting for a choice from you"
+
+# Follows sources.NEEDS_A_DECISION in the banner. That text is shared with
+# sources.py and says nothing about putting the question off, which only the
+# window can do.
+_PUT_OFF_A_QUESTION = (
+    "If you would rather not decide now, choose when to be reminded. If a "
+    "later check finds no decision is needed any more, the updates will be "
+    "shown as usual."
+)
+# The banner once the question has been put off: one line, no buttons, and the
+# way back to it is the update button, which stays live.
+_DEFERRED_QUESTION = (
+    "Some updates are waiting for a decision from you. Press Update now when "
+    "you are ready to make it."
+)
 
 # What the window says when a check failed and nothing more specific is known.
 # The reason, in zypper's or a helper's own words, goes in the banner's tooltip
@@ -293,6 +310,18 @@ def _deferred_sources_text(failed: list[tuple[str, str]]) -> str:
     return f"{subject} could not be reached."
 
 
+def _is_stuck(z) -> bool:
+    """Did the check work nothing out because a source is unreachable?
+
+    A check that failed, or stopped at a question, while a source was
+    unreachable and with no list and no held lock. It is the one situation the
+    update cannot get itself past, so nothing in the window may hide it.
+    """
+    return (bool(z.error) or z.needs_decision) and bool(
+        z.failed_repos
+    ) and not (z.count or z.locked)
+
+
 def _relative_time(iso: str) -> str:
     if not iso:
         return "never"
@@ -427,22 +456,27 @@ class MainWindow(QMainWindow):
         for label in (self._headline, self._subline, self._banner_label):
             label.setTextFormat(Qt.PlainText)
         banner_l.addWidget(self._banner_label)
-        # Both buttons' labels and jobs depend on what the banner is saying, so
-        # each is wired once to a dispatcher and _show_banner() sets the rest.
-        # The alternative sits to the *left* of the primary one, the way a
-        # dialog puts its lesser choice there.
+        # The buttons' jobs depend on what the banner is saying, so each is
+        # wired once to a dispatcher and _show_banner() sets the rest. The two
+        # that put the check off sit to the *left* of the primary one, the way
+        # a dialog puts its lesser choices there. They only ever offer the
+        # deferral, so _show_banner() gives them the reason, not an action.
         self._banner_btn = QPushButton()
         self._banner_action = None
         self._banner_btn.clicked.connect(self._on_banner_button)
         self._banner_btn.hide()
-        self._banner_btn_alt = QPushButton()
-        self._banner_alt_action = None
-        self._banner_btn_alt.clicked.connect(self._on_banner_alt_button)
+        self._banner_put_off = None
+        self._banner_btn_alt = QPushButton("Remind me tomorrow")
+        self._banner_btn_alt.clicked.connect(self._on_remind_tomorrow)
         self._banner_btn_alt.hide()
+        self._banner_btn_week = QPushButton("Remind me in a week")
+        self._banner_btn_week.clicked.connect(self._on_remind_in_a_week)
+        self._banner_btn_week.hide()
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.addStretch(1)
         btn_row.addWidget(self._banner_btn_alt)
+        btn_row.addWidget(self._banner_btn_week)
         btn_row.addWidget(self._banner_btn)
         banner_l.addLayout(btn_row)
         self._banner.hide()
@@ -569,9 +603,17 @@ class MainWindow(QMainWindow):
     def apply_zypper_status(self, status: UpdateStatus) -> None:
         """Called when the status file (written by the root checker) changes."""
         # The background check runs every few hours whether or not the user put
-        # anything off. If it comes back clean the thing they were avoiding has
-        # gone, and there is no reason to keep hiding the updates from them.
-        if not status.zypper.error and not status.zypper.failed_repos:
+        # anything off. A deferral ends when the thing it was for has gone, and
+        # only then: a week put off for a question must not keep hiding real
+        # updates because some other source failed one night, and a day put off
+        # for a source must not end because a question turned up. A check that
+        # failed outright learnt nothing, so it ends nothing.
+        gone = {
+            DEFER_QUESTION: not status.zypper.needs_decision,
+            DEFER_SOURCES: not status.zypper.failed_repos,
+        }
+        reason = self._settings.deferred_for()
+        if not status.zypper.error and reason is not None and gone[reason]:
             self._settings.set_deferred_until(None)
         if self._lost_the_lock(status.zypper):
             # A check that could not get the lock learnt nothing, and nothing
@@ -627,6 +669,15 @@ class MainWindow(QMainWindow):
     def trigger_check(self) -> None:
         self._on_check_clicked()
 
+    def trigger_launch_check(self) -> None:
+        """The check made when the app starts: it keeps a deferral.
+
+        The app starts at every login, so a check that cleared the deferral
+        would undo a week put off the next morning. It can still end it, by
+        finding that the reason has gone (see apply_zypper_status()).
+        """
+        self._start_check(clear_deferral=False)
+
     def trigger_update(self) -> None:
         self.show_and_raise()
         self._on_update_clicked()
@@ -650,13 +701,19 @@ class MainWindow(QMainWindow):
     # -- checking ---------------------------------------------------------- #
 
     def _on_check_clicked(self) -> None:
+        # No argument, because this is connected to QPushButton.clicked.
+        self._start_check(clear_deferral=True)
+
+    def _start_check(self, clear_deferral: bool) -> None:
         if self._privileged.check_running or self._runner.is_running:
             return
-        # Asking for a check is the plain opposite of putting one off. This is
-        # the one route that clears it outright, and it covers the window's own
-        # button, the tray menu's, and the re-checks that follow an update run
-        # or a wait for the lock.
-        self._settings.set_deferred_until(None)
+        # Asking for a check is the plain opposite of putting one off. Nearly
+        # every route clears it outright: the window's own button, the tray
+        # menu's, and the re-checks that follow an update run, a wait for the
+        # lock or a change to a source. The check at launch is the exception,
+        # because nobody asked for it.
+        if clear_deferral:
+            self._settings.set_deferred_until(None)
         # Started before the UI is touched, so that _set_busy() sees the check
         # as running and greys the banner's button out with the rest.
         self._privileged.run_check()
@@ -764,16 +821,24 @@ class MainWindow(QMainWindow):
 
     # -- updating -------------------------------------------------------- #
 
-    def _on_defer_clicked(self) -> None:
-        """Stop asking about this until tomorrow.
+    def _put_off(self, days: int, reason: str) -> None:
+        """Stop asking about this for *days* days.
 
         No confirmation. It changes nothing on the computer, and "Check now" is
         two inches away and undoes it.
         """
-        tomorrow = date.today() + timedelta(days=1)
-        self._settings.set_deferred_until(tomorrow)
-        self._statusbar(f"Put off until {_day(tomorrow)}.")
+        day = date.today() + timedelta(days=days)
+        self._settings.set_deferred_until(day, reason)
+        self._statusbar(f"Put off until {_day(day)}.")
         self._render()
+
+    def _on_remind_tomorrow(self) -> None:
+        if self._banner_put_off is not None:
+            self._put_off(1, self._banner_put_off)
+
+    def _on_remind_in_a_week(self) -> None:
+        if self._banner_put_off is not None:
+            self._put_off(7, self._banner_put_off)
 
     def _on_update_clicked(self) -> None:
         """Start an update run.
@@ -908,8 +973,7 @@ class MainWindow(QMainWindow):
         self._run_failure = None if ok else message
         if not ok:
             self._render_banner(
-                self._status.zypper, self._visible_total(),
-                self._settings.deferred_until(),
+                self._status.zypper, self._visible_total(), self._deferral()
             )
         # A run that failed keeps its log whatever the preference says: the
         # transcript is the only record of what went wrong.
@@ -981,7 +1045,8 @@ class MainWindow(QMainWindow):
 
         # Read once and passed down, so the headline, the banner and the tray
         # cannot disagree within a single pass.
-        deferred = self._settings.deferred_until()
+        deferral = self._deferral()
+        question_put_off = self._question_put_off(z, deferral)
 
         checked = _relative_time(self._status.generated)
         if z.error and not z.count:
@@ -990,17 +1055,20 @@ class MainWindow(QMainWindow):
             # with nothing. A check that lost the lock over a list we already
             # had keeps that list, and its count, and says so in the banner.
             self._headline.setText(_COULD_NOT_CHECK)
-        elif z.needs_decision and not z.count:
-            # Not deferrable and not "up to date": the updates are there, and
-            # waiting on the user rather than on anyone's server.
+        elif z.needs_decision and not z.count and not question_put_off:
+            # Not "up to date": the updates are there, and waiting on the user
+            # rather than on anyone's server. Hidden only by a deferral that
+            # was made for this question.
             self._headline.setText(_WAITING_FOR_A_CHOICE)
-        elif deferred is not None:
-            self._headline.setText(f"Update check put off until {_day(deferred)}")
+        elif deferral is not None:
+            self._headline.setText(
+                f"Update check put off until {_day(deferral[0])}"
+            )
         elif total == 0:
             self._headline.setText("Your system is up to date")
         else:
             self._headline.setText(f"{_count(total, 'update')} available")
-        self._render_banner(z, total, deferred)
+        self._render_banner(z, total, deferral)
 
         bits = [f"Last checked {checked}"]
         if z.count and z.download_size:
@@ -1012,7 +1080,7 @@ class MainWindow(QMainWindow):
         self._subline.setText(" · ".join(bits))
 
         self._update_buttons()
-        self._emit_state(deferred)
+        self._emit_state(deferral)
 
     def _add_group(self, title: str, rows: list[tuple[str, str, str]]) -> None:
         parent = QTreeWidgetItem([title, "", ""])
@@ -1023,7 +1091,35 @@ class MainWindow(QMainWindow):
         for name, change, arch in rows:
             parent.addChild(QTreeWidgetItem([name, change, arch]))
 
-    def _emit_state(self, deferred=None) -> None:
+    def _deferral(self) -> tuple[date, str] | None:
+        """The day the check is put off until and why, or None.
+
+        Both are read here and passed down together, so a deferral that ends at
+        midnight between two reads cannot leave a date with no reason.
+        """
+        day = self._settings.deferred_until()
+        reason = self._settings.deferred_for()
+        if day is None or reason is None:
+            return None
+        return day, reason
+
+    @staticmethod
+    def _question_put_off(z, deferral) -> bool:
+        """Is the solver's question hidden behind a deferral made for it?
+
+        Not by one made for an unreachable source, which says nothing about a
+        question that has turned up since. Not while a source is unreachable
+        too: that is the stuck case, and it is never hidden.
+        """
+        return bool(
+            deferral is not None
+            and deferral[1] == DEFER_QUESTION
+            and z.needs_decision
+            and not z.count
+            and not _is_stuck(z)
+        )
+
+    def _emit_state(self, deferral=None) -> None:
         z = self._status.zypper
         total = z.count + (
             self._status.flatpak.count if self._include_flatpak() else 0
@@ -1034,15 +1130,17 @@ class MainWindow(QMainWindow):
             # z.error is zypper's or the helper's own wording; the window's
             # banner keeps it in a tooltip, and the panel says what it means.
             self.stateChanged.emit(TrayState.ERROR, _COULD_NOT_CHECK)
-        elif z.needs_decision and not z.count:
+        elif z.needs_decision and not z.count and not self._question_put_off(
+            z, deferral
+        ):
             # UPDATES, not ERROR: there are updates, and this is also the state
             # that lets the tray menu's "Update now…" start the run that asks.
             self.stateChanged.emit(TrayState.UPDATES, _WAITING_FOR_A_CHOICE)
-        elif deferred is not None:
+        elif deferral is not None:
             # The whole point of putting it off: the icon stops looking like
             # there is something to attend to.
             self.stateChanged.emit(
-                TrayState.IDLE, f"Update check put off until {_day(deferred)}"
+                TrayState.IDLE, f"Update check put off until {_day(deferral[0])}"
             )
         elif total > 0:
             self.stateChanged.emit(
@@ -1132,8 +1230,7 @@ class MainWindow(QMainWindow):
         if self._run_failure is not None:
             self._run_failure = None
             self._render_banner(
-                self._status.zypper, self._visible_total(),
-                self._settings.deferred_until(),
+                self._status.zypper, self._visible_total(), self._deferral()
             )
         self._terminal.reset()
         self._terminal_box.hide()
@@ -1148,8 +1245,7 @@ class MainWindow(QMainWindow):
         text: str,
         button: str = "",
         on_click=None,
-        alt_button: str = "",
-        alt_on_click=None,
+        put_off: str | None = None,
         tone: str = "warning",
         details: str = "",
     ) -> None:
@@ -1164,16 +1260,18 @@ class MainWindow(QMainWindow):
         self._banner_action = on_click
         self._banner_btn.setText(button)
         self._banner_btn.setVisible(bool(button))
-        self._banner_alt_action = alt_on_click
-        self._banner_btn_alt.setText(alt_button)
-        self._banner_btn_alt.setVisible(bool(alt_button))
+        # The reason the two "Remind me" buttons will store, or None to hide
+        # them. They always appear and disappear together.
+        self._banner_put_off = put_off
+        self._banner_btn_alt.setVisible(put_off is not None)
+        self._banner_btn_week.setVisible(put_off is not None)
         self._banner.show()
         self._update_banner_button()
 
     def _hide_banner(self) -> None:
         self._banner_label.setToolTip("")
         self._banner_action = None
-        self._banner_alt_action = None
+        self._banner_put_off = None
         self._banner.hide()
 
     def _update_banner_button(self) -> None:
@@ -1188,28 +1286,24 @@ class MainWindow(QMainWindow):
         """
         busy = self._busy_with_the_package_system()
         self._banner_btn.setEnabled(not busy)
-        # Not the second one: the only thing it has ever offered is putting the
-        # check off until tomorrow, which writes a date into this user's
-        # preferences and touches nothing zypper owns.
+        # Not the "Remind me" pair: the only thing they do is put the check off,
+        # which writes a date into this user's preferences and touches nothing
+        # zypper owns.
 
     def _on_banner_button(self) -> None:
         if self._banner_action is not None:
             self._banner_action()
 
-    def _on_banner_alt_button(self) -> None:
-        if self._banner_alt_action is not None:
-            self._banner_alt_action()
-
     # -- banner ------------------------------------------------------------ #
 
-    def _render_banner(self, z, total: int, deferred=None) -> None:
+    def _render_banner(self, z, total: int, deferral=None) -> None:
         """Decide what the banner says.
 
         More than one of these can be true at once - a source that could not be
         reached *and* no snapshot plugin, say - so the messages are joined
         rather than one silently hiding another. The primary button belongs to
-        the first message that wants one; the second only ever offers the
-        deferral.
+        the first message that wants one; the two "Remind me" buttons only ever
+        offer the deferral, and *deferral* is the (day, reason) one in force.
         """
         parts: list[str] = []
         # Other programs' own words for what went wrong. They are kept for the
@@ -1226,8 +1320,7 @@ class MainWindow(QMainWindow):
             details.append(self._check_failure_detail)
         button = ""
         on_click = None
-        alt_button = ""
-        alt_on_click = None
+        put_off = None
         # The oldest day any of the missing sources was first found
         # unreachable, which is what decides between "try again tomorrow" and
         # "this one is not coming back".
@@ -1237,15 +1330,19 @@ class MainWindow(QMainWindow):
         # gone stale too, which is the one situation the update cannot get
         # itself past. A held lock is excluded - that is its own problem with
         # its own button, and it is not what the missing source did.
-        stuck = (bool(z.error) or z.needs_decision) and bool(
-            z.failed_repos
-        ) and not (z.count or z.locked)
+        stuck = _is_stuck(z)
 
         if z.needs_decision and not z.count and not stuck:
             # Plain, not orange: nothing is wrong with this computer, and the
             # way on is the update button, not the banner. The words stay off
             # the cause, which zypper states itself once the run starts.
-            parts.append(NEEDS_A_DECISION)
+            if self._question_put_off(z, deferral):
+                # One line and no buttons, like a source put off: the choice
+                # has been made, and the update button is still the way in.
+                parts.append(_DEFERRED_QUESTION)
+            else:
+                parts.append(f"{NEEDS_A_DECISION} {_PUT_OFF_A_QUESTION}")
+                put_off = DEFER_QUESTION
 
         if stuck:
             # A check that worked nothing out while a source was unreachable is
@@ -1276,8 +1373,8 @@ class MainWindow(QMainWindow):
                 button = "Wait for it and retry"
                 on_click = self._on_wait_for_lock_clicked
 
-        if z.failed_repos and deferred is not None:
-            # Put off until tomorrow, so the paragraph and the button go and
+        if z.failed_repos and deferral is not None and deferral[1] == DEFER_SOURCES:
+            # Put off for a source, so the paragraph and the buttons go and
             # one line stays. Nothing else in this method is suppressed: a
             # failed check, a held lock and a missing snapshot plugin are real
             # problems and are not what the user put off.
@@ -1295,10 +1392,10 @@ class MainWindow(QMainWindow):
             # from it and buys nothing. The deferral is all that is left,
             # because it is the only thing here that is genuinely the user's
             # choice: wait, or update without the newest versions from that
-            # source.
+            # source. A deferral made for a question does not cover this, so
+            # it is offered again here.
             parts.append(_missing_sources_text(z.failed_repos, total, since))
-            alt_button = "Try again tomorrow"
-            alt_on_click = self._on_defer_clicked
+            put_off = DEFER_SOURCES
 
         for alias, name in self._sources_we_switched_off():
             parts.append(
@@ -1325,8 +1422,7 @@ class MainWindow(QMainWindow):
             details="\n".join(details),
             button=button,
             on_click=on_click,
-            alt_button=alt_button,
-            alt_on_click=alt_on_click,
+            put_off=put_off,
             # One rule: orange for something wrong with this computer, plain
             # text for everything else. A failed check, a held lock and a
             # missing snapshot plugin set `problem`; an unreachable source the
