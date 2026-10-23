@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.13.1
+Version:        0.14.0
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -72,6 +72,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Fri Oct 23 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.14.0
+- When updates need a decision from you, or a software source cannot be reached, the reminder can now be put off until tomorrow or for a week. Logging in no longer cancels it.
+
 * Mon Oct 05 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.13.1
 - Version 0.13.0 was never published, because a check that runs before publishing crashed. This release fixes that check and is otherwise the same as 0.13.0.
 
