@@ -134,6 +134,11 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   (reboot/restart needed) to success. `runner.py` also treats 0/102/103 as OK.
   `MainWindow._on_update_clicked()` prints the exact argv into the terminal
   before starting, since the free-text options field lives in the user's config.
+  The same preference, `dup_non_interactive`, also gives both Flatpak steps
+  `-y` (`UpdateRunner.build_queue(flatpak_yes=…)`, passed from
+  `_on_update_clicked()`), so Flatpak stops asking "Proceed with these
+  changes?". The solver-question override above does not touch it, since that
+  question is about zypper's solver only.
   `-y` is zypper's non-interactive mode, and on a clash between packages its
   answer is **cancel** (`(c): c`, exit 4), not the first solution; that would be
   `--force-resolution`, which is not on the allow-list.
@@ -477,6 +482,28 @@ runner.py  command queue            helper/snapshots   list/compare via snapper
   Tumbleweed, apart from `polkit`, and nothing else requires it (only
   `gvfs-backends` recommends it), hence `Requires: pkexec` in the spec and
   `PKEXEC_MISSING` when `QProcess` reports `FailedToStart`.
+* **The system-wide Flatpak step goes through `run-update --flatpak`, not
+  through Flatpak's own polkit.** Measured on 25/10/2026: openSUSE's
+  `polkit-default-privs` (`/usr/etc/polkit-default-privs/profiles/standard`)
+  makes every Flatpak update action `auth_admin_keep` (update-remote,
+  metadata-update, appstream-update, runtime-update, app-update), each is a
+  separate polkit action, and a plain `flatpak update` as the user brought up
+  one password window per action. Flatpak's own
+  `/usr/share/polkit-1/rules.d/60-org.freedesktop.Flatpak.rules` lets only
+  `wheel` in without a password, and openSUSE leaves `wheel` empty (sudo has
+  `Defaults targetpw`, and polkit's `50-default.rules` has
+  `_suse_admin_groups = []`). So the step runs `pkexec
+  /usr/libexec/tumbleweed-updater/run-update --flatpak [-y]`, and as root
+  there is one polkit check, under the app's own `update` action. pkexec's
+  subject is its parent process, the GUI (`pty_session` does `pty.fork()` and
+  then execs), so the password typed for the zypper step covers the Flatpak
+  step. Not yet measured: a zypper step that outlasts polkit's keep period may
+  ask once more. The helper takes `--flatpak` only as the very first argument
+  (`--cleanup --flatpak` is refused by `dupargs`), allows `-y` and nothing
+  else, passes `--system` explicitly because root's plain `flatpak update`
+  would also update root's own per-user installation, defaults `XDG_DATA_DIRS`
+  because pkexec clears it and Flatpak warns otherwise, and does not wait for
+  zypp's lock in this mode, since Flatpak does not use it.
 * The pre/post Btrfs snapshots around `zypper dup` itself are **not** taken
   here — `zypper dup` triggers `snapper-zypp-plugin` for those. `helper/check`
   only reports whether that plugin is installed; the window shows a warning

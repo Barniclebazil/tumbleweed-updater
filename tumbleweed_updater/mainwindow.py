@@ -894,8 +894,8 @@ class MainWindow(QMainWindow):
         lines = ["The following will run in the terminal below:"]
         lines += [f"  {i}. {text}" for i, text in enumerate(steps_run, 1)]
 
+        notes = []
         if do_zypper:
-            notes = []
             if prefs.dup_allow_vendor_change:
                 notes.append(
                     "Packages may switch to a different supplier (vendor change)"
@@ -907,10 +907,14 @@ class MainWindow(QMainWindow):
                 )
             if prefs.cleanup_after_update:
                 notes.append("Delete the downloaded package files afterwards")
-            if notes:
-                lines.append("")
-                lines.append("Options in effect:")
-                lines += [f"  {i}. {n}" for i, n in enumerate(notes, 1)]
+        # The solver's question turns -y off for zypper only.
+        if (do_fp_sys or do_fp_user) and prefs.dup_non_interactive:
+            notes.append("Flatpak apps update without asking to confirm")
+        if notes:
+            lines.append("")
+            lines.append("Options in effect:")
+            lines += [f"  {i}. {n}" for i, n in enumerate(notes, 1)]
+        if do_zypper:
             # Spell the command out: the free-text options field is stored in
             # the user's config, so this is the only place the exact argument
             # list that will run as root is visible.
@@ -936,6 +940,7 @@ class MainWindow(QMainWindow):
             cleanup=prefs.cleanup_after_update,
             do_flatpak_system=do_fp_sys,
             do_flatpak_user=do_fp_user,
+            flatpak_yes=prefs.dup_non_interactive,
         )
         self._terminal_box.show()
         self._update_log_controls()

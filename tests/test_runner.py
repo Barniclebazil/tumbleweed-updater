@@ -7,6 +7,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from tumbleweed_updater import runner as runner_module
+from tumbleweed_updater.paths import HELPER_RUN_UPDATE, resolve_helper
 from tumbleweed_updater.progress import COUNTED_UPTO, CREEP_TO
 from tumbleweed_updater.runner import Step, UpdateRunner
 from tumbleweed_updater.terminal import TerminalWidget
@@ -301,3 +302,20 @@ def test_only_the_zypper_step_is_read_and_download_only_is_noticed(app, dup_args
     )
     assert [s.counts_packages for s in steps] == [True, False, False]
     assert steps[0].download_only is download_only
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_the_flatpak_steps_follow_the_no_confirm_choice(app, yes):
+    runner = UpdateRunner(TerminalWidget())
+    steps = runner.build_queue(
+        do_zypper=False,
+        do_flatpak_system=True,
+        do_flatpak_user=True,
+        flatpak_yes=yes,
+    )
+    extra = ["-y"] if yes else []
+    # The system step runs as root through the helper, so one password covers it.
+    assert steps[0].argv == [
+        "pkexec", resolve_helper(HELPER_RUN_UPDATE), "--flatpak", *extra
+    ]
+    assert steps[1].argv == ["flatpak", "--user", "update", *extra]

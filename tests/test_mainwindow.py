@@ -1371,3 +1371,33 @@ def test_the_row_goes_when_the_run_ends_however_it_ends(window):
 def test_the_row_sits_below_the_buttons(window):
     outer = window.centralWidget().layout()
     assert outer.itemAt(outer.count() - 1).widget() is window._run_box
+
+
+def _flatpak_only(win, monkeypatch, no_confirm):
+    from tumbleweed_updater.sources import FlatpakRef, FlatpakResult
+
+    prefs = SettingsStore().load()
+    SettingsStore().save(replace(prefs, dup_non_interactive=no_confirm))
+    win._status.flatpak = FlatpakResult(
+        refs=[FlatpakRef("org.x.App", installation="system"),
+              FlatpakRef("org.y.App", installation="user")]
+    )
+    win._chk_system.setChecked(False)
+    win._chk_flatpak.setChecked(True)
+    seen = {}
+    monkeypatch.setattr(
+        type(win._runner), "start", lambda self, steps: seen.setdefault("s", steps)
+    )
+    win._on_update_clicked()
+    return seen["s"]
+
+
+@pytest.mark.parametrize("no_confirm", [True, False])
+def test_flatpak_asks_nothing_when_zypper_asks_nothing(
+    window, monkeypatch, no_confirm
+):
+    steps = _flatpak_only(window, monkeypatch, no_confirm)
+
+    assert [("-y" in s.argv) for s in steps] == [no_confirm, no_confirm]
+    note = "Flatpak apps update without asking to confirm"
+    assert (note in window._terminal.buffer_text()) is no_confirm

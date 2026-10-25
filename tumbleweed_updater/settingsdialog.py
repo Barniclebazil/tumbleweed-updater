@@ -194,12 +194,14 @@ class SettingsDialog(QDialog):
         self._non_interactive.setChecked(self._prefs.dup_non_interactive)
         self._non_interactive.setToolTip(
             "Installs updates without stopping to ask whether to go ahead, and "
-            "accepts licence agreements automatically.\n\n"
+            "accepts licence agreements automatically. Flatpak apps are "
+            "updated without asking too.\n\n"
             "If packages in the update clash with each other, the update stops "
             "and nothing is installed. If the last check for updates found a "
             "clash, this setting is overridden for that update and you are "
             "asked in the terminal to choose a fix.\n\n"
-            "zypper options: -y --auto-agree-with-licenses"
+            "zypper options: -y --auto-agree-with-licenses\n"
+            "flatpak option: -y"
         )
         grid.addRow("", self._non_interactive)
 

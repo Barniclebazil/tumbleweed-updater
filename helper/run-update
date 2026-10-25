@@ -7,7 +7,21 @@ processes inherit this process's terminal, which is what keeps zypper
 interactive and coloured.
 
 Usage: run-update [--cleanup] [zypper dup options...]
+       run-update --flatpak [-y]
     --cleanup   run "zypper clean" after a successful upgrade
+    --flatpak   update the system-wide Flatpaks instead of running zypper;
+                only counts as the very first argument
+
+The Flatpak mode exists for the password window. The GUI used to run plain
+"flatpak update" as the user, and openSUSE's polkit-default-privs makes every
+Flatpak update action auth_admin_keep (update-remote, metadata-update,
+appstream-update, runtime-update, app-update; measured 2026-10-25 in
+/usr/etc/polkit-default-privs/profiles/standard). Each is a separate polkit
+action, so each brought up its own password window, and Flatpak's own rules
+file only lets members of wheel through, which openSUSE leaves empty. As root
+through this helper there is one polkit check, under this helper's own action,
+and pkexec's subject is its parent process (the GUI), so the authorisation from
+the zypper step just before covers it.
 
 A software source that cannot be reached is the situation this script is built
 around, and the order of its two steps is the whole answer to it.
@@ -223,7 +237,45 @@ def _split_own_options(args: list[str]) -> tuple[set[str], list[str]]:
     return mine, rest
 
 
+def _flatpak(args: list[str]) -> int:
+    """Update the system-wide Flatpaks as root.
+
+    Polkit pins the path of this script and never its arguments, so the only
+    options let through are the ones the GUI sends. No wait for zypp's lock:
+    Flatpak does not use it.
+    """
+    if args not in ([], ["-y"]):
+        sys.stderr.write(
+            "run-update: refusing unrecognised flatpak option(s): "
+            + " ".join(args)
+            + "\n"
+        )
+        return 2
+
+    # pkexec clears the environment, and without this Flatpak warns about its
+    # search path in words that read like an error.
+    os.environ.setdefault(
+        "XDG_DATA_DIRS", "/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
+    )
+
+    # --system is explicit because, as root, plain "flatpak update" would also
+    # update root's own per-user installation.
+    argv = ["flatpak", "update", "--system", *args]
+    _heading(" ".join(argv))
+    return _run(argv)
+
+
 def main() -> int:
+    os.environ.setdefault("TERM", "xterm-256color")
+    os.environ.setdefault("LANG", "C.UTF-8")
+    os.environ["PAGER"] = PAGER
+    os.environ["SYSTEMD_PAGER"] = PAGER
+
+    # Only as the very first argument, so "--cleanup --flatpak" is not this
+    # mode: it reaches dupargs below and is refused like any unknown option.
+    if sys.argv[1:2] == ["--flatpak"]:
+        return _flatpak(sys.argv[2:])
+
     mine, args = _split_own_options(sys.argv[1:])
     cleanup = "--cleanup" in mine
 
@@ -235,11 +287,6 @@ def main() -> int:
             + "\n"
         )
         return 2
-
-    os.environ.setdefault("TERM", "xterm-256color")
-    os.environ.setdefault("LANG", "C.UTF-8")
-    os.environ["PAGER"] = PAGER
-    os.environ["SYSTEMD_PAGER"] = PAGER
 
     # PackageKit takes the zypp lock whenever something wakes it, and zypper
     # then refuses to start at all. Waiting turns a failed upgrade into a

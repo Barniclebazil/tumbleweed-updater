@@ -6,8 +6,8 @@ widget:
 
 1. ``pkexec run-update [extra dup args]``  - the ``zypper dup`` itself, fully
    interactive so the user answers zypper's prompts.
-2. ``flatpak update``                      - system Flatpaks (flatpak triggers
-   its own polkit prompt if needed).
+2. ``pkexec run-update --flatpak``        - system Flatpaks, as root, so the
+   password given for the system update covers it.
 3. ``flatpak --user update``               - per-user Flatpaks.
 
 If a step exits non-zero the queue stops and the failure is reported; the user
@@ -97,8 +97,10 @@ class UpdateRunner(QObject):
         cleanup: bool = False,
         do_flatpak_system: bool = False,
         do_flatpak_user: bool = False,
+        flatpak_yes: bool = False,
     ) -> list[Step]:
         steps: list[Step] = []
+        yes = ["-y"] if flatpak_yes else []
         if do_zypper:
             argv = ["pkexec", resolve_helper(HELPER_RUN_UPDATE)]
             if cleanup:
@@ -117,7 +119,12 @@ class UpdateRunner(QObject):
             steps.append(
                 Step(
                     "Updating Flatpak apps for all users",
-                    ["flatpak", "update"],
+                    [
+                        "pkexec",
+                        resolve_helper(HELPER_RUN_UPDATE),
+                        "--flatpak",
+                        *yes,
+                    ],
                     "The Flatpak update for all users",
                 )
             )
@@ -125,7 +132,7 @@ class UpdateRunner(QObject):
             steps.append(
                 Step(
                     "Updating your Flatpak apps",
-                    ["flatpak", "--user", "update"],
+                    ["flatpak", "--user", "update", *yes],
                     "The update of your Flatpak apps",
                 )
             )
@@ -150,7 +157,7 @@ class UpdateRunner(QObject):
 
         Ctrl-C first, because the zypper step runs as root through pkexec and a
         signal from this process would be refused; SIGTERM is only a fallback
-        for the flatpak steps, which run as us.
+        for the per-user Flatpak step, which runs as us.
         """
         if self._session is None or not self._session.is_running:
             return False
