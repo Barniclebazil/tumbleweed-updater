@@ -3,7 +3,7 @@
 #
 
 Name:           tumbleweed-updater
-Version:        0.14.0
+Version:        0.14.1
 Release:        0
 Summary:        Tray-based update manager for openSUSE Tumbleweed on KDE
 License:        GPL-3.0-or-later
@@ -72,6 +72,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} SITELIB=%{python3_sitelib} \
 %{_datadir}/applications/org.opensuse.TumbleweedUpdater.desktop
 
 %changelog
+* Sun Oct 25 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.14.1
+- Updating Flatpak apps for all users now asks for your password once instead of several times. With "Install without asking me to confirm" switched on, Flatpak updates no longer ask you to type y.
+
 * Fri Oct 23 2026 Barrie O'Neill Williams <barrie.oneill.williams@gmail.com> - 0.14.0
 - When updates need a decision from you, or a software source cannot be reached, the reminder can now be put off until tomorrow or for a week. Logging in no longer cancels it.
 
